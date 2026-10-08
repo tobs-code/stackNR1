@@ -1,1 +1,1 @@
-"""STUB — NOT IMPLEMENTED, kein Schutz aktiv."""
+"""STUB — Events folgen in state-Schritt; kein Schutz aktiv."""
