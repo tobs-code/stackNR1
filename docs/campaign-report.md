@@ -2,9 +2,10 @@
 
 - Datum: 2026-10-09
 - Matrix: `docs/campaign.md` (eingefroren vor dem Lauf)
-- Geprüfter Code-Commit: `e91b84960df0ec4fb81286e47494d349a9527524`
-  (81/81-Lauf auf genau diesem Code-Stand; Matrix-Provenienz bleibt separat:
-  `docs/campaign.md`, eingefroren vor dem Kampagnen-Lauf)
+- Code unter Test: `e91b84960df0ec4fb81286e47494d349a9527524` (unveränderter Code)
+- Verifizierter Lauf: `03c779ec1c4a3675720e175500432a2e6775981b`
+  (81/81 auf diesem Baum; Diff zu `e91b849` = nur diese Report-Datei)
+- Matrix-Provenienz separat: `docs/campaign.md`, eingefroren vor dem Kampagnen-Lauf
 - Testbefehl: `$env:PYTHONPATH="src"; python3 -m pytest tests/ -q -p no:cacheprovider`
   (Workdir `agent-control-stack/`)
 - Python: 3.13.7; pydantic 2.12.0 (installiert; Pin in pyproject: 2.10.4),
