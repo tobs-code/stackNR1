@@ -40,8 +40,8 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
             prev_event_hash: str = "0" * 64,
             _test_hook: str | None = None) -> dict | IdempotencyReplay:
     """_test_hook (NUR Tests): 'lost_ack' wirft nach erfolgreichem Commit
-    OutcomeUnknown (deterministischer ACK-Verlust); 'kill_before_commit'
-    simuliert Backend-Tod vor CAS (Rollback + OutcomeUnknown)."""
+    OutcomeUnknown (deterministischer ACK-Verlust); 'kill_mid_tx' beendet das
+    eigene Backend per pg_terminate_backend in offener Tx nach CAS."""
     repo = Repository(dsn)
     try:
         action = repo.load_action(action_id)
@@ -90,9 +90,6 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
         raise ExecutionDenied(str(e)) from e
 
     payload = args_hash(arguments)
-    if _test_hook == "kill_before_commit":
-        # Deterministischer Backend-Tod: Tx bricht ab, Ausgang unbekannt.
-        raise OutcomeUnknown(action_id, "injected kill_before_commit")
     try:
         out = repo.commit_demo_update(
             run_id=action["run_id"], action_id=action_id,
@@ -102,7 +99,8 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
             payload_hash=payload,
             event_id=event_id or str(uuid.uuid4()),
             run_sequence=run_sequence, prev_event_hash=prev_event_hash,
-            guard_arguments=arguments, guard_actor_id=actor_id)
+            guard_arguments=arguments, guard_actor_id=actor_id,
+            _test_hook=_test_hook if _test_hook != "lost_ack" else None)
         if _test_hook == "lost_ack":
             # Commit steht in der DB, ACK geht "verloren".
             raise OutcomeUnknown(action_id, "injected lost_ack")

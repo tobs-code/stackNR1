@@ -114,7 +114,8 @@ class Repository:
                            run_sequence: int,
                            prev_event_hash: str,
                            guard_arguments: dict | None = None,
-                           guard_actor_id: str | None = None) -> dict | IdempotencyReplay:
+                           guard_actor_id: str | None = None,
+                           _test_hook: str | None = None) -> dict | IdempotencyReplay:
         """Claim + CAS + Effect + Transitionen + Result + Outbox, eine Transaktion.
 
         Replay-Fall: Key existiert mit gleichem Payload und result gesetzt ⇒
@@ -165,6 +166,11 @@ class Repository:
                     "missing" if found is None else f"found={found['version']}")
             new_version = cas["version"]
             assert new_version == expected_version + 1
+            if _test_hook == "kill_mid_tx":
+                # TEST-ONLY: echter Backend-Tod in offener Tx (nach CAS, vor
+                # Result). Verbindung stirbt, Commit-Ausgang unbekannt.
+                cur.execute("SELECT pg_terminate_backend(pg_backend_pid())")
+                raise AssertionError("unreachable: backend terminated")
             result = {"record_id": record_id, "old_version": expected_version,
                       "new_version": new_version, "status": new_status}
             cur.execute(

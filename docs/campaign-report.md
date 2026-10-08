@@ -11,13 +11,13 @@
 - Umgebung: Postgres 16 (Container `stack-pg`), OPA 0.68 (`stack-opa`),
   Test-DB `control_stack_test` (migriert 001–003 via `mig/runner.py`)
 
-## Ergebnis: 78/78 grün (Stand e82df9f-Nachlauf: +11 Worker/Closeout-Tests)
+## Ergebnis: 80/80 grün
 
 | Suite | Tests |
 |---|---|
 | unit (contracts, JCS, OPA-Client) | 16 |
 | integration state/gate/execution/recovery/roles/evidence/worker | 47 |
-| adversarial campaign + closeout (C1–C5, A4, D2, D6 voll, E, I6, I7, demo_read) | 15 |
+| adversarial campaign + closeout (C1–C5, A4, D2, D6 voll, E, I6, I7, demo_read, I8) | 17 |
 
 ## Abdeckung je Matrix-Gruppe
 

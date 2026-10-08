@@ -167,14 +167,25 @@ def test_grant_matrix_exact(live):
         cur.execute(
             "SELECT sequence_name FROM information_schema.sequences"
             " WHERE sequence_schema='public'")
+        cur.execute(
+            "SELECT sequence_name FROM information_schema.sequences"
+            " WHERE sequence_schema='public'")
+        # 004: nur benötigte Sequenzen je Rolle (least privilege).
+        want_seq = {
+            "stack_gate": {"action_transitions_seq_seq"},
+            "stack_worker": {"action_transitions_seq_seq", "state_transitions_seq_seq"},
+            "stack_recovery": {"action_transitions_seq_seq"},
+        }
         for (seq,) in cur.fetchall():
             for role in ("stack_gate", "stack_worker", "stack_recovery"):
-                # Sequenz-Rechte stehen nicht in role_table_grants → Funktion.
                 cur.execute("SELECT has_sequence_privilege(%s, %s, 'USAGE'),"
                             " has_sequence_privilege(%s, %s, 'SELECT'),"
                             " has_sequence_privilege(%s, %s, 'UPDATE')",
                             (role, seq, role, seq, role, seq))
-                assert cur.fetchone() == (True, True, False), (role, seq)
+                if seq in want_seq[role]:
+                    assert cur.fetchone() == (True, True, False), (role, seq)
+                else:
+                    assert cur.fetchone() == (False, False, False), (role, seq)
 
 
 def test_verifier_never_writes(live):

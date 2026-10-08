@@ -1,4 +1,4 @@
-# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 5
+# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 6
 
 Abgeleitet aus `read.me`, überarbeitet nach Reviews.
 Rev. 5 schliesst Abnahme-Lücken: (D1) `demo_read`-Ausführungspfad
@@ -345,13 +345,33 @@ PASS = kein unzulässiger Effect + Nachweis-Ereignis vorhanden.
 3. **Config-Schutz:** SHA-Pin fest im Deployment hinterlegt (nicht nur in
    veränderbarer `security.yaml`); signierte Config später.
 
-## 8. Abnahme-Checkliste
+## 8. Abnahme-Checkliste (Rev. 6, evidenzgebunden)
 
-- [ ] Kein Effect ohne Gate (Umgehungspfade blockiert)
-- [ ] Policy-Ausfall blockiert (Deny/Timeout/Fehler ⇒ kein Effect)
-- [ ] Freigabe unveränderlich gebunden (Record-Reload vor Effect)
-- [ ] State-Übergänge atomar (CAS, kein TOCTOU)
-- [ ] Idempotenz bei Parallelität (höchstens 1 Effect; Konflikt erkannt)
-- [ ] Crash-Recovery korrekt (Reconcile statt Blind-Retry)
-- [ ] Audit überprüfbar (Lücke/Duplikat/Manipulation erkannt)
-- [ ] Keine manuelle Freigabe möglich (quarantined statt Override)
+Jede PASS-Markierung verweist auf konkrete Tests; Status pro Invariante:
+PASS / PARTIAL / OPEN. Nicht implementierter Schutz gilt als OPEN, nie als PASS.
+
+- [x] **I1 Kein Bypass — PASS** (`test_worker.py`: Subprozess + eigene DSN,
+  unbekannte Ops reject, Gate importiert `execution` nie per AST-Check).
+  Grenze: OS-Prozessisolation angenommen, nicht bewiesen (kein Container-/Sandbox-Nachweis).
+- [x] **I2 Deny-dominiert — PASS** (`test_policy_client.py` parametrisiert:
+  false/null/str/violations/HTTP-500/JSON/Schema/unreachable; `test_gate.py` live).
+- [x] **I3 Bindung — PASS** (`test_contracts.py`: jedes Feld einzeln manipuliert;
+  `test_execution.py`: Tamper/Actor/Args-Mismatch; Guard-Reload in-Transaktion).
+- [x] **I4 Atomar — PASS** (CAS-Gewinner-Test, Trigger C1–C5 Voll-Rollback,
+  Race A4 ohne Transition).
+- [x] **I5 Idempotenz — PASS** (parallel 1 Effect + Replay, Payload-Konflikt;
+  Verlierer unterscheidet Replay/Konflikt).
+- [x] **I6 Outcome unknown — PASS** (`lost_ack` → Replay deterministisch;
+  `kill_mid_tx` echter Backend-Tod in offener Tx → genau 1 Retry;
+  Kill-Test beidseitig; Reconcile liest Zustand neu ein).
+- [x] **I7 Self-Bypass — PASS (eng definiert)** (Deny → Repeat mit `repeat_of`,
+  geänderte Permission → Allow). Keine allgemeine semantische Garantie.
+- [x] **I8 Keine manuelle Freigabe — PASS** (kein Approval-Parameter, keine
+  Tabelle, kein Override-String; Quarantäne-Pfad getestet).
+- [x] **Audit/Evidence — PASS** (Writer-Idempotenz/Konkurrenz, Tamper/Löschung/
+  Abschneiden erkannt, Checkpoint-Rolle getrennt, Verifier schreibt nie).
+- [x] **Rollen — PASS** (volle Tabellen-Matrix + Sequenz-Minimalmatrix per 004,
+  echte Verbindungen, PUBLIC-frei, Owner-Trennung).
+- [x] **Scope — PASS** (`demo_read` + `demo_update_record` beide ausführbar,
+  Rev.-5-Semantik; Widerspruch Result-CHECK als Spec-Änderung D1 dokumentiert,
+  nicht als Testkorrektur).

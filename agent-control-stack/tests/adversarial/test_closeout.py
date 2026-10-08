@@ -98,7 +98,8 @@ def test_lost_ack_replays_stored_result(live):
 
 
 def test_kill_before_commit_retries_once(live):
-    """I6 deterministisch (b): Tod vor Commit → Rollback → genau 1 Retry."""
+    """I6 deterministisch (b): echter Backend-Tod in offener Tx nach CAS →
+    Rollback → genau 1 Retry."""
     opa, rid = live
     p = {"action_id": str(uuid.uuid4()), "run_id": rid,
          "action": "demo_update_record", "target": "rec-1",
@@ -107,13 +108,29 @@ def test_kill_before_commit_retries_once(live):
     rec = authorize(GATE, opa, p, ACTOR, ["records.write"])
     with pytest.raises(OutcomeUnknown):
         execute(WORKER, str(rec.action_id), dict(p["arguments"]), ACTOR,
-                _test_hook="kill_before_commit")
+                _test_hook="kill_mid_tx")
     assert reconcile(ADMIN, str(rec.action_id), rid).outcome == "retry_allowed"
     res = execute(WORKER, str(rec.action_id), dict(p["arguments"]), ACTOR)
     assert res["new_version"] == 1
     with _admin() as c, c.cursor() as cur:
         cur.execute("SELECT version FROM records WHERE record_id='rec-1'")
         assert cur.fetchone()[0] == 1
+
+
+def test_no_manual_approval_path(live):
+    """I8: kein Approval-Parameter, keine Approval-Tabelle, kein Override."""
+    import inspect as _inspect
+
+    from control_stack.gate import executor as _ex
+
+    sig = _inspect.signature(_ex.authorize)
+    assert "approv" not in " ".join(sig.parameters).lower()
+    src = open(_ex.__file__, encoding="utf-8").read().lower()
+    assert "override" not in src
+    with _admin() as c, c.cursor() as cur:
+        cur.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'"
+                    " AND tablename LIKE '%approv%'")
+        assert cur.fetchall() == []
 
 
 def test_deny_fingerprint_repeat_then_changed_allows(live):

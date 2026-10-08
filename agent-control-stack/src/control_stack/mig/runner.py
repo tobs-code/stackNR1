@@ -10,7 +10,8 @@ import sys
 
 import psycopg
 
-MIGRATIONS = ["001_schema.sql", "002_roles.sql", "003_evidence.sql"]
+MIGRATIONS = ["001_schema.sql", "002_roles.sql", "003_evidence.sql",
+              "004_seq_least_privilege.sql"]
 
 
 def migrate(admin_dsn: str) -> list[str]:

@@ -91,6 +91,17 @@ def test_diverged_resource_quarantines_no_retry(live):
         assert cur.fetchone()[0] == "quarantine"
 
 
+def test_tampered_record_reconciles_to_quarantine(live):
+    """Recovery klassifiziert manipulierte Bindung nicht als retry_allowed."""
+    opa, rid = live
+    rec = _auth(opa, rid)
+    with _db() as c:
+        c.execute("UPDATE actions SET target='rec-9' WHERE action_id=%s",
+                  (str(rec.action_id),))
+    insp = reconcile(DSN, str(rec.action_id), rid)
+    assert insp.outcome == "quarantined"
+
+
 def test_unknown_action_quarantines(live):
     _, rid = live
     assert reconcile(DSN, str(uuid.uuid4()), rid).outcome == "quarantined"

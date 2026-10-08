@@ -8,6 +8,8 @@ from typing import Literal
 
 import psycopg
 
+from ..contracts import RECORD_FIELDS, canon, canonical_hash, expires_at_iso
+
 Outcome = Literal["replayed", "retry_allowed", "quarantined"]
 
 
@@ -41,6 +43,31 @@ def inspect_action(cur: psycopg.Cursor, action_id: str) -> Inspection:
     rec = cur.fetchone()
     if rec is None:
         return Inspection("quarantined", None, "kein Authorization Record")
+    # Volle Bindungsprüfung wie der Worker: Record-Felder gegen Action-Zeile
+    # + kanonischer Hash neu rekonstruiert. Retry nur bei gültiger Bindung.
+    if (rec["action"] != action["action"] or rec["target"] != action["target"]
+            or rec["args_hash"] != action["args_hash"]
+            or rec["expected_resource_version"] != action["expected_resource_version"]):
+        return Inspection("quarantined", None,
+                          "Record weicht von Action-Zeile ab (Tamper?)")
+    import json as _json
+    try:
+        fields = {
+            "action": rec["action"], "target": rec["target"],
+            "args_hash": rec["args_hash"], "actor_id": rec["actor_id"],
+            "permissions_sorted": sorted(rec["permissions"]),
+            "expected_resource_version": rec["expected_resource_version"],
+            "preconditions_canon": _json.loads(canon(dict(rec["preconditions"]))),
+            "policy_version": rec["policy_version"],
+            "context_hash": rec["context_hash"], "action_id": str(action["action_id"]),
+            "expires_at_iso": expires_at_iso(rec["expires_at"]),
+        }
+        assert set(fields) == set(RECORD_FIELDS)
+        if canonical_hash(fields) != rec["canonical_hash"]:
+            return Inspection("quarantined", None,
+                              "Record-Hash ungültig (Tamper?)")
+    except Exception:
+        return Inspection("quarantined", None, "Record nicht rekonstruierbar")
     cur.execute("SELECT clock_timestamp() > %s AS expired", (rec["expires_at"],))
     if cur.fetchone()["expired"]:
         return Inspection("quarantined", None, "Autorisierung abgelaufen")
