@@ -9,14 +9,15 @@
 - Python: 3.13.7; pydantic 2.12.0 (installiert; Pin in pyproject: 2.10.4),
   psycopg[binary] 3.2.4, pytest 8.3.4 (8.4.2 installiert), httpx 0.28.1
 - Umgebung: Postgres 16 (Container `stack-pg`), OPA 0.68 (`stack-opa`),
-  Test-DB `control_stack_test` (migriert 001–003 via `mig/runner.py`)
+  Test-DB `control_stack_test` (migriert 001–004 via `mig/runner.py`;
+  Stand per `SELECT name FROM schema_migrations` verifiziert)
 
-## Ergebnis: 80/80 grün
+## Ergebnis: 81/81 grün
 
 | Suite | Tests |
 |---|---|
 | unit (contracts, JCS, OPA-Client) | 16 |
-| integration state/gate/execution/recovery/roles/evidence/worker | 47 |
+| integration state/gate/execution/recovery/roles/evidence/worker | 48 |
 | adversarial campaign + closeout (C1–C5, A4, D2, D6 voll, E, I6, I7, demo_read, I8) | 17 |
 
 ## Abdeckung je Matrix-Gruppe

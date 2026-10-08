@@ -92,7 +92,7 @@ def test_diverged_resource_quarantines_no_retry(live):
 
 
 def test_tampered_record_reconciles_to_quarantine(live):
-    """Recovery klassifiziert manipulierte Bindung nicht als retry_allowed."""
+    """Feldbindung: actions.target weicht vom Record ab → quarantined."""
     opa, rid = live
     rec = _auth(opa, rid)
     with _db() as c:
@@ -100,6 +100,25 @@ def test_tampered_record_reconciles_to_quarantine(live):
                   (str(rec.action_id),))
     insp = reconcile(DSN, str(rec.action_id), rid)
     assert insp.outcome == "quarantined"
+
+
+def test_tampered_auth_record_hash_reconciles_to_quarantine(live):
+    """Hashbindung: Feld in authorization_records ändern (Owner-Eingriff im
+    Test), canonical_hash NICHT anpassen → Rekonstruktionsprüfung schlägt
+    fehl → quarantined statt retry_allowed."""
+    opa, rid = live
+    rec = _auth(opa, rid)
+    with _db() as c:
+        c.execute("UPDATE authorization_records SET permissions=%s WHERE action_id=%s",
+                  (["records.read"], str(rec.action_id),))
+    insp = reconcile(DSN, str(rec.action_id), rid)
+    assert insp.outcome == "quarantined"
+    with _db() as c, c.cursor() as cur:
+        cur.execute("SELECT status FROM actions WHERE action_id=%s",
+                    (str(rec.action_id),))
+        assert cur.fetchone()[0] == "quarantined"
+        cur.execute("SELECT version FROM records WHERE record_id='rec-1'")
+        assert cur.fetchone()[0] == 0  # kein Effect aus dem Retry-Pfad
 
 
 def test_unknown_action_quarantines(live):
