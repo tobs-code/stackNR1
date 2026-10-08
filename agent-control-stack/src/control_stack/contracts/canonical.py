@@ -6,7 +6,12 @@
 - SHA-256 über UTF-8-Bytes der kanonischen Form, hex.
 - expires_at: UTC, Format YYYY-MM-DDTHH:MM:SSZ (Sekunden, Z-Suffix).
 
-Seiteneffektfrei: kein DB, kein OPA, kein Clock-Zugriff ausser Übergabe.
+Eingeschränkter Typbereich (Rev. 4 JCS-Vorbehalt): nur str/int/bool/None/
+dict[str, …]/list. Floats, non-str dict-Keys und sonstige Typen werden mit
+TypeError abgelehnt — erzwungen durch _check(), nicht nur dokumentiert.
+Damit ist die Serialisierung innerhalb des Vertrags deterministisch;
+volle RFC-8785-Konformität ist NICHT beansprucht (siehe Tests mit
+Referenzvektoren für den abgedeckten Bereich).
 """
 from __future__ import annotations
 
@@ -16,10 +21,31 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+def _check(obj: Any) -> None:
+    if obj is None or isinstance(obj, (str, int)) or isinstance(obj, bool):
+        if isinstance(obj, float):
+            raise TypeError("floats nicht erlaubt (JCS-Zahlendarstellung)")
+        return
+    if isinstance(obj, float):
+        raise TypeError("floats nicht erlaubt (JCS-Zahlendarstellung)")
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if not isinstance(k, str):
+                raise TypeError("non-str dict keys nicht erlaubt")
+            _check(v)
+        return
+    if isinstance(obj, (list, tuple)):
+        for v in obj:
+            _check(v)
+        return
+    raise TypeError(f"Typ nicht erlaubt: {type(obj).__name__}")
+
+
 def canon(obj: Any) -> bytes:
+    _check(obj)
     return json.dumps(
         obj, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False,
+        ensure_ascii=False, allow_nan=False,
     ).encode("utf-8")
 
 
