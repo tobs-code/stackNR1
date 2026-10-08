@@ -1,10 +1,11 @@
-# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 3
+# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 4
 
 Abgeleitet aus `read.me`, überarbeitet nach Reviews.
-Rev. 3 fixt drei Blocker aus dem Spec-vs-Repo-Review:
-(B1) Ergebnis-Speicherung für Idempotency-Replay,
-(B2) mehrere Transitionen pro Action,
-(B3) vollständiger rekonstruierbarer Authorization Record.
+Rev. 4 fixt zwei Lücken aus dem Rev.-3-Check:
+(C1) kanonisches Feldset exakt = gespeicherte Record-Felder (kein `args`,
+kein `context`, kein Doppel-`target`; Hash über `args_hash`/`context_hash`);
+(C2) Action-Lebenszyklus (`action_transitions`) vs. fachliche
+Ressourcenversion (`state_transitions`) sauber getrennt.
 Status: EINGEFROREN (siehe BUILD_MANIFEST.md). Keine stillen Änderungen.
 
 ## 0. Scope v0.1
@@ -37,16 +38,23 @@ liegen. Erst danach externer Effect mit echtem `outcome_unknown`.
   vor dem Effect. Test: direkter Funktions-/IPC-Aufruf ohne Record ⇒ kein Effect.
 - **I2 Deny-dominiert:** Nur explizites `allow` führt weiter. `deny`,
   `abstain`, `error`, Timeout (>500ms), unreachable ⇒ kein Effect.
-- **I3 Bindung (P0-fix):** Freigabe = unveränderlicher Authorization Record
-  mit kanonischem Hash über: canon(action+args, JCS) + Typen + actor_id +
-  permissions + target + betroffene Ressourcen-Versionen + preconditions +
-  policy_version + action_id + expiry (vertrauenswürdige Zeit). Hash allein
-  authentifiziert nichts — Record wird   vor dem Effect. Kanonisches Feldset (JCS, Schlüssel sortiert):
-  `{action, target, args, actor_id, permissions (sortiert), target,
-  expected_resource_version, preconditions, policy_version, context,
-  action_id, expires_at}` — exakt die in `authorization_records` (+`actions`)
-  persistierten Werte; der Worker lädt Record + Action-Zeile und vergleicht
-  Feld für Feld plus Hash.
+- **I3 Bindung (Rev. 4, C1-fix):** Freigabe = unveränderlicher Authorization
+  Record. Rekonstruktionsfunktion (verbindlich, identisch bei Erzeugung und
+  Prüfung):
+  1. Kanonisiere `arguments` per JCS (Schlüssel sortiert, UTF-8) →
+     `args_hash = sha256(canon_args_hex)`.
+  2. Kanonisiere `preconditions`-Snapshot per JCS → Teil des Record-Feldsets.
+  3. `canonical_hash = sha256(JCS(record_fields))` mit exakt diesem Feldset
+     (Reihenfolge JCS, keine Extras):
+     `{action, target, args_hash, actor_id, permissions_sorted,
+     expected_resource_version, preconditions_canon, policy_version,
+     context_hash, action_id, expires_at_iso}`.
+  Der Worker lädt `authorization_records` + `actions`-Zeile, vergleicht jedes
+  Feld und berechnet den Hash neu — Mismatch ⇒ Reject. Unveränderlichkeit:
+  Worker-DB-Rolle erhält kein UPDATE/DELETE auf `authorization_records`
+  (REVOKE, siehe §4); App-Schicht schreibt Records nur einmal (INSERT).
+  Hash allein authentifiziert nichts — Bindung gilt nur zusammen mit
+  Reload + Feldvergleich + Rollentrennung.
 - **I4 Stale-Reject (P0-fix):** Versionsprüfung + Übergang **atomar**
   (`SELECT ... FOR UPDATE` auf betroffener Zeile oder Compare-and-Swap-
   Update `WHERE version = expected`). TOCTOU zwischen Check und Write ⇒
@@ -161,6 +169,9 @@ CREATE TABLE actions (
 -- B3: vollständiger Authorization Record. Alle Hash-Eingaben sind hier
 -- oder per FK in actions persistiert; der Worker rekonstruiert daraus
 -- denselben canonical_hash (JCS über das Feldset unten, §1 I3).
+-- Unveränderlichkeit (C1): Gate-Rolle INSERT-only auf
+-- authorization_records; Worker-Rolle SELECT-only (REVOKE UPDATE, DELETE,
+-- als Migrations-SQL im Build-Schritt nachziehen.)
 CREATE TABLE authorization_records (
   action_id TEXT PRIMARY KEY REFERENCES actions(action_id),
   canonical_hash TEXT NOT NULL,
@@ -184,6 +195,25 @@ CREATE TABLE policy_decisions (
   decided_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (action_id, policy_version, context_hash)
 );
+
+Action-Lebenszyklus (Rev. 4, C2-fix): `action_transitions` protokolliert
+jeden Action-Statuswechsel (proposed → … → committed); `state_transitions`
+protokolliert **ausschliesslich** fachliche Ressourcenversionen
+(nur `demo_update_record`, genau eine Zeile pro erfolgreichem CAS).
+`actions.status` ist abgeleiteter Snapshot des letzten
+`action_transitions`-Eintrags und wird in derselben Transaktion gesetzt.
+
+CREATE TABLE action_transitions (
+  seq BIGSERIAL PRIMARY KEY,
+  action_id TEXT NOT NULL REFERENCES actions(action_id),
+  old_status TEXT NOT NULL,
+  new_status TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Erlaubte Paare als CHECK (Spiegel von §3):
+-- proposed→{validated,rejected}, validated→{authorized,denied,rejected},
+-- authorized→executing, executing→{confirmed,failed,outcome_unknown},
+-- outcome_unknown→{executing,quarantined}, confirmed→committed.
 
 -- B2: mehrere Transitionen pro action_id (Lebenszyklus §3).
 -- Fachlicher Ressourcen-Übergang nur für demo_update_record; für
