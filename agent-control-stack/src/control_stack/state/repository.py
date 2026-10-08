@@ -30,6 +30,18 @@ class IdempotencyConflictError(Exception):
     pass
 
 
+class AuthorizationMissingError(Exception):
+    pass
+
+
+class AuthorizationExpiredError(Exception):
+    pass
+
+
+class AuthorizationMismatchError(Exception):
+    pass
+
+
 class IllegalTransitionError(ValueError):
     pass
 
@@ -100,15 +112,23 @@ class Repository:
                            expected_version: int, idempotency_key: str,
                            payload_hash: str, event_id: str,
                            run_sequence: int,
-                           prev_event_hash: str) -> dict | IdempotencyReplay:
+                           prev_event_hash: str,
+                           guard_arguments: dict | None = None,
+                           guard_actor_id: str | None = None) -> dict | IdempotencyReplay:
         """Claim + CAS + Effect + Transitionen + Result + Outbox, eine Transaktion.
 
         Replay-Fall: Key existiert mit gleichem Payload und result gesetzt ⇒
         IdempotencyReplay ohne Effect. Anderer Payload ⇒ Conflict.
+
+        Guard (execution-Pfad): wenn guard_arguments/actor gesetzt, wird
+        IN derselben Transaktion der Authorization Record (FOR UPDATE)
+        geladen, Ablauf gegen clock_timestamp() (nicht now()!) geprüft und
+        der Hash neu rekonstruiert. Abgelaufen/manipuliert/fehlend ⇒
+        kein Effect, Rollback.
         """
         with self._conn() as c, c.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(
-                "SELECT idempotency_payload_hash, result, status FROM actions"
+                "SELECT action_id, idempotency_payload_hash, result, status FROM actions"
                 " WHERE idempotency_key=%s FOR UPDATE", (idempotency_key,))
             row = cur.fetchone()
             if row is not None and row["idempotency_payload_hash"] != payload_hash:
@@ -116,6 +136,10 @@ class Repository:
                     f"key {idempotency_key}: anderer Payload")
             if row is not None and row["result"] is not None:
                 return IdempotencyReplay(result=row["result"])
+            guarded = guard_arguments is not None or guard_actor_id is not None
+            if guarded:
+                self._enforce_guard(cur, action_id, guard_arguments or {},
+                                    guard_actor_id or "")
             if row is None:
                 cur.execute(
                     "INSERT INTO actions (action_id, run_id, action, target,"
@@ -147,6 +171,12 @@ class Repository:
                 "UPDATE actions SET status='committed', result=%s::jsonb,"
                 " result_written_at=now() WHERE action_id=%s",
                 (json.dumps(result), action_id))
+            if guarded:
+                # Gate hat proposed→validated→authorized geschrieben; der
+                # Übergang authorized→executing gehört in dieselbe Tx, zuerst.
+                cur.execute(
+                    "INSERT INTO action_transitions (action_id, old_status, new_status)"
+                    " VALUES (%s,'authorized','executing')", (action_id,))
             cur.execute(
                 "INSERT INTO action_transitions (action_id, old_status, new_status)"
                 " VALUES (%s,'executing','confirmed'),(%s,'confirmed','committed')",
@@ -162,3 +192,35 @@ class Repository:
                 (event_id, run_id, action_id, run_sequence,
                  new_version, payload_hash, prev_event_hash))
             return result
+
+    @staticmethod
+    def _enforce_guard(cur: Any, action_id: str, arguments: dict,
+                       actor_id: str) -> None:
+        """Autorisierung in-Transaktion prüfen. Wirft ohne Effect."""
+        from ..contracts import AuthorizationRecord
+        cur.execute(
+            "SELECT * FROM authorization_records WHERE action_id=%s FOR UPDATE",
+            (action_id,))
+        rec = cur.fetchone()
+        if rec is None:
+            raise AuthorizationMissingError(f"kein Authorization Record: {action_id}")
+        cur.execute("SELECT clock_timestamp() > %s AS expired",
+                    (rec["expires_at"],))
+        if cur.fetchone()["expired"]:
+            raise AuthorizationExpiredError(f"Record abgelaufen: {action_id}")
+        try:
+            record = AuthorizationRecord(
+                action_id=rec["action_id"], canonical_hash=rec["canonical_hash"],
+                action=rec["action"], target=rec["target"],
+                args_hash=rec["args_hash"], actor_id=rec["actor_id"],
+                permissions=list(rec["permissions"]),
+                expected_resource_version=rec["expected_resource_version"],
+                preconditions=dict(rec["preconditions"]),
+                policy_version=rec["policy_version"],
+                context_hash=rec["context_hash"], expires_at=rec["expires_at"])
+        except Exception as e:
+            raise AuthorizationMismatchError(f"Record ungültig: {e}") from e
+        if record.actor_id != actor_id:
+            raise AuthorizationMismatchError("actor weicht ab")
+        if not record.verify(arguments):
+            raise AuthorizationMismatchError("Record-Verify fehlgeschlagen")
