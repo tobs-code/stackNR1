@@ -1,0 +1,3 @@
+"# v0.1 — Platzhalter. Config-Pin liegt fest im Deployment (Spec Rev.2 §7.3).
+opa_timeout_ms: 500
+"

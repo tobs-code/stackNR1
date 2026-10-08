@@ -1,0 +1,4 @@
+"actions:
+  demo_read: {permission: records.read, write: false}
+  demo_update_record: {permission: records.write, write: true}
+"

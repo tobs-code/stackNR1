@@ -1,0 +1,365 @@
+ziel:
+
+Ein fokussiertes System mit klaren Schichten:
+
+Policy Layer (was darf überhaupt passieren?)
+
+2. Execution Gate (nur erlaubte Aktionen kommen durch)
+
+3. State + Memory (nachvollziehbarer Kontext)
+
+4. Audit / Evidence (was ist wirklich passiert, auch bei Angriff?)
+
+5. Recovery / Degraded Modes (was passiert bei Unsicherheit oder Verstoß?)
+
+---
+
+Ich würde den Referenzstack als lokale, fail-closed Ausführungsplattform für LLM-Agenten entwerfen. Nicht als Sammlung von Guardrails, sondern als System, in dem die Sicherheitsentscheidungen außerhalb des LLM liegen und sich die relevanten Eigenschaften automatisiert testen lassen.
+
+Dabei würde ich drei Dinge strikt auseinanderhalten:
+
+1. Control Plane: Welche Aktionen sind unter welchen Bedingungen erlaubt?
+
+2. Execution Plane: Welche Aktionen werden tatsächlich ausgeführt, und mit welchen Rechten?
+
+3. Evidence Plane: Was wurde angefordert, entschieden, ausgeführt und nachweislich verändert?
+
+State und Recovery wirken über alle drei Bereiche hinweg. Das ergibt eine klare Architektur, ohne dass man für jede Funktion einen eigenen Microservice braucht.
+
+# 1. Architekturentwurf: der komplette Referenzstack
+
+## A. Agent / LLM Runtime
+
+Lokales LLM oder API · Planner · Tool-Proposals · strukturierte Ausgabe
+
+Nicht vertrauenswürdiger Vorschlagsgenerator. Keine direkten Datenbank- oder Tool-Credentials.
+
+Untrusted Action Proposal
+
+## B. Trusted Control Plane
+
+1. Policy PDP
+
+OPA / Rego
+
+Allow / Deny / Abstain
+
+2. Execution PEP
+
+Eigener Gate-Service
+
+Validierung und Durchsetzung
+
+3. State Machine
+
+Versionierte Übergänge
+
+Preconditions und Invarianten
+
+4. Recovery Controller
+
+Timeouts, Quarantäne
+
+Retry und manuelle Freigabe
+
+Nur autorisierte, typisierte Aktionen
+
+## C. Execution Plane
+
+Tool Broker
+
+Capability-Prüfung, Argumentvalidierung
+
+Isolierte Worker
+
+Minimalrechte, Zeit- und Ressourcenlimits
+
+Egress Control
+
+Netzwerk- und Ziel-Allowlist
+
+Effect Adapters
+
+Idempotenz, Ergebnisabgleich
+
+Transaktionen und verifizierte Ergebnisse
+
+## D. State + Evidence Plane
+
+PostgreSQL
+
+Autoritativer Zustand, Outbox, Constraints
+
+Append-only Events
+
+Entscheidungen und Ergebnisse
+
+Evidence Anchoring
+
+Hash-Kette, externe Anker
+
+Observability
+
+Metriken, Traces, Alerts
+
+Querschnitt: Security Foundation
+
+Identitäten · getrennte Service-Rechte · Secret Management · signierte Konfiguration · Versionierung · Backup und Restore
+
+Die Grafik zeigt logische Komponenten. Für den ersten produktiven Prototyp würde ich sie bewusst als modularen Monolithen mit getrennten Worker-Prozessen bauen. OPA und die Datenbank sind separate Prozesse; Gate, Zustandslogik und Recovery müssen anfangs keine eigenen Microservices sein.
+
+## 2. Konkrete Komponenten: meine Auswahl für Version 0.1
+
+Ich würde möglichst viel selbst betreiben können und den Stack so klein halten, dass du jede Sicherheitsentscheidung nachvollziehen kannst.
+
+| Funktion             | Konkrete Wahl                                                   | Warum                                                                                                                                              |
+| -------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent Runtime        | Bestehender Agent bzw. eigener Python-Runner                    | Die Agentenlogik bleibt austauschbar.                                                                                                              |
+| Action Contract      | Pydantic + JSON Schema                                          | Typisierte Eingaben und explizite Aktionsverträge                                                                                                  |
+| Policy Engine        | OPA                                                             | Deklarative Policies, unabhängig von der Ausführungslogik. [Offizielle Dokumentation](https://www.openpolicyagent.org/docs?utm_source=chatgpt.com) |
+| Execution Gate       | Eigener Python-Service                                          | Ein zentraler, obligatorischer Kontrollpunkt für jeden Tool-Aufruf                                                                                 |
+| State Machine        | Eigener, kleiner Zustandsautomat                                | Explizite Übergänge statt impliziter Statusänderungen                                                                                              |
+| Persistenz           | PostgreSQL                                                      | Transaktionen, Constraints, Versionierung und Event Outbox                                                                                         |
+| Worker-Isolation     | Separate Prozesse oder Container                                | Getrennte Credentials, begrenzte Rechte und Ressourcen                                                                                             |
+| Audit Events         | PostgreSQL-Outbox + separater Event Writer                      | Ereignisse zuverlässig aus Zustandsänderungen ableiten                                                                                             |
+| Integritätsnachweise | SHA-256-Hash-Kette + extern gesicherte Checkpoints              | Manipulationen nachträglich erkennbar machen                                                                                                       |
+| Observability        | OpenTelemetry                                                   | Einheitliche Logs, Metriken und Traces. [Dokumentation](https://opentelemetry.io/docs/?utm_source=chatgpt.com)                                     |
+| Recovery             | Eigener Recovery Controller                                     | Explizite Regeln für Retry, Abgleich, Quarantäne und Freigabe                                                                                      |
+| Semantisches Memory  | Zunächst keines; später Qdrant oder vorhandene KG-Infrastruktur | Kein unnötiger Einfluss auf die Sicherheitsentscheidung                                                                                            |
+
+OPA ist genau für die Trennung zwischen Policy-Entscheidung und deren Durchsetzung ausgelegt. Die Durchsetzung selbst muss aber in deiner Anwendung liegen.
+
+![](https://www.google.com/s2/favicons?domain=https://www.openpolicyagent.org\&sz=32)
+
+Open Policy Agent
+
++1
+
+Für den ersten Prototyp würde ich nicht mit Envoy, Temporal, Rekor und ClickHouse gleichzeitig starten. Sie können später sinnvoll werden, lösen aber unterschiedliche Probleme und sind keine Voraussetzung für die zentralen Sicherheitsinvarianten.
+
+Eine wichtige Einschränkung beim Audit: Eine lokal erzeugte Hash-Kette allein schützt nicht vor einem Angreifer, der auch die Vertrauensanker kontrolliert. Sigstores Rekor zeigt das Prinzip eines extern überprüfbaren Transparency Logs mit Inclusion- und Consistency-Proofs; für deinen Runtime-Audit wäre das eine mögliche spätere Verankerung, nicht die fertige Audit-Lösung.
+
+![](https://www.google.com/s2/favicons?domain=https://docs.sigstore.dev\&sz=32)
+
+Sigstore
+
++1
+
+## 3. Der entscheidende Ablauf: vom Vorschlag bis zum bestätigten Ergebnis
+
+Der Kern des Systems ist ein einziger kontrollierter Ausführungspfad.
+
+
+flowchart TD
+    A["LLM: Action Proposal"] --> B["Schema Validation"]
+    B -->|Invalid| X["Reject + Audit"]
+    B -->|Valid| C["Load Trusted State"]
+    C --> D["Check Preconditions"]
+    D -->|Conflict| R["Degraded Mode"]
+    D -->|Valid| E["OPA: Policy Decision"]
+    E -->|Deny / Error / Unknown| X
+    E -->|Allow| F["Bind Decision to Request + State Version"]
+    F --> G["Persist Authorization + Execution Intent"]
+    G --> H["Execution Gate"]
+    H --> I["Isolated Worker / Tool Adapter"]
+    I --> J{"Effect confirmed?"}
+    J -->|Yes| K["Commit Result + State Transition"]
+    J -->|No / Timeout| L["Mark Outcome Unknown"]
+    K --> M["Append Evidence Event"]
+    L --> N["Reconcile / Quarantine"]
+    M --> O["Return Verified Result"]
+    N --> M
+    R --> M
+
+
+Die Reihenfolge ist bewusst gewählt. Ein `allow` ist noch keine Ausführungsgarantie und ein Timeout kein Beweis für einen Fehlschlag.
+
+### Der Ausführungsvertrag
+
+Jede Aktion sollte eine eindeutige Identität und einen überprüfbaren Kontext besitzen. Zum Beispiel:
+
+JSON
+
+```
+{
+  "action_id": "act-001",
+  "run_id": "run-042",
+  "action": "update_record",
+  "target": "record-123",
+  "arguments": {
+    "status": "approved"
+  },
+  "expected_state_version": 17,
+  "policy_version": "sha256:...",
+  "idempotency_key": "run-042-act-001"
+}
+```
+
+Das ist ein konzeptionelles Schema, kein fertiger Produktionsvertrag. Der Agent darf den Datensatz nicht allein dadurch autorisieren, dass er diese Felder mitsendet. Insbesondere `policy_version`, Identität und Berechtigungen müssen vom vertrauenswürdigen System geprüft beziehungsweise gebunden werden.
+
+Die Freigabe sollte mindestens an Folgendes gebunden sein:
+
+* die kanonisch serialisierte Aktion und ihre Argumente,
+
+* die authentifizierte Identität und ihre Berechtigungen,
+
+* die relevante Zustandsversion und die geprüften Preconditions,
+
+* die Policy-Version und das Entscheidungsergebnis,
+
+* eine eindeutige Aktions-ID sowie gegebenenfalls eine Ablaufzeit.
+
+Verändert sich der relevante Kontext nach der Freigabe, muss das System die Entscheidung erneut prüfen oder die Aktion ablehnen.
+
+## 4. Die Datenstruktur: Zustand und Ereignisse sauber trennen
+
+Ich würde zwei verschiedene Datenmodelle verwenden.
+
+A. Autoritativer Zustand
+
+Das ist der aktuelle, verbindliche Zustand des Systems. Er liegt in PostgreSQL und wird über Transaktionen verändert.
+
+Beispieltabellen:
+
+| Tabelle             | Zweck                                               |
+| ------------------- | --------------------------------------------------- |
+| `runs`              | Laufstatus, Eigentümer, Abbruchstatus               |
+| `actions`           | Aktions-ID, Parameter-Hash, Status, Idempotency-Key |
+| `policy_decisions`  | Entscheidung, Policy-Version, Kontext-Hash          |
+| `state_transitions` | Alter Zustand, neuer Zustand, Version               |
+| `outbox_events`     | Transaktional gespeicherte Audit-Ereignisse         |
+| `recovery_jobs`     | Offene Abgleiche und Recovery-Aufgaben              |
+
+B. Ereignishistorie
+
+Hier dokumentierst du, was geschehen ist. Ereignisse werden nicht nachträglich überschrieben, sondern durch neue Ereignisse ergänzt.
+
+Ein mögliches Ereignismodell:
+
+JSON
+
+```
+{
+  "event_id": "evt-00042",
+  "run_id": "run-042",
+  "action_id": "act-001",
+  "sequence": 12,
+  "event_type": "execution_outcome_unknown",
+  "timestamp": "2026-10-09T00:00:00Z",
+  "state_version": 17,
+  "payload_hash": "sha256:...",
+  "previous_event_hash": "sha256:..."
+}
+```
+
+Die Ereignistypen sollten fachlich eindeutig sein, beispielsweise:
+
+`action_proposed`, `policy_allowed`, `policy_denied`, `execution_started`, `execution_confirmed`, `execution_failed`, `execution_outcome_unknown`, `state_committed`, `recovery_started`.
+
+Dabei ist ein wesentlicher Unterschied zu beachten: Ein Event in der Datenbank ist zunächst ein gespeicherter Datensatz, noch kein unabhängig gesicherter Beweis. Die Outbox verhindert das klassische Problem, dass eine Datenbanktransaktion erfolgreich ist, aber das dazugehörige Ereignis wegen eines Prozessabsturzes verloren geht. Die spätere externe Verankerung schafft eine zusätzliche Vertrauensgrenze.
+
+## 5. Die Recovery-Logik: nicht alles ist ein Rollback
+
+Ich würde die Recovery-Modi als explizite Zustände modellieren, nicht als lose Sammlung von Exception-Handlern.
+
+DENIED — Policy-Verstoß
+
+Aktion nicht ausführen. Entscheidung protokollieren. Kein automatisches Umgehen der Policy durch einen zweiten Agentenversuch.
+
+POLICY_UNAVAILABLE — Entscheidung nicht möglich
+
+Kritische schreibende Aktionen blockieren. Bereits laufende Aktionen nicht blind wiederholen. Für ungefährliche Leseoperationen kann eine separat definierte Ausfallregel gelten.
+
+OUTCOME_UNKNOWN — Ergebnis unklar
+
+Keine erneute Ausführung ohne Idempotenzgarantie oder Ergebnisabgleich. Status und externe Wirkung zuerst rekonstruieren.
+
+STATE_INTEGRITY_FAILURE — Zustand widersprüchlich
+
+Weitere schreibende Aktionen im betroffenen Bereich stoppen. Beweise sichern und den autoritativen Zustand kontrolliert rekonstruieren.
+
+MANUAL_REVIEW — Eingriff erforderlich
+
+Aktion und Kontext zur Prüfung vorlegen. Freigabe durch eine authentifizierte, berechtigte Person; anschließend erneute Prüfung der aktuellen Preconditions.
+
+Ein Detail, das ich ausdrücklich festschreiben würde: Eine manuelle Freigabe ist kein universeller Override. Sie darf nur genau die vorgesehenen Aktionen freigeben und keine übergeordneten Sicherheitsinvarianten aushebeln.
+
+## 6. Projektstruktur für den Referenzstack
+
+Ich würde mit Python, PostgreSQL und OPA starten. Die Projektstruktur könnte so aussehen:
+
+```
+agent-control-stack/
+├── pyproject.toml
+├── docker-compose.yml
+├── config/
+│   ├── security.yaml
+│   └── action_registry.yaml
+├── policies/
+│   ├── authorization.rego
+│   └── invariants.rego
+├── src/
+│   └── control_stack/
+│       ├── contracts/
+│       │   ├── actions.py
+│       │   └── events.py
+│       ├── policy/
+│       │   ├── client.py
+│       │   └── decision.py
+│       ├── gate/
+│       │   ├── executor.py
+│       │   ├── validation.py
+│       │   └── capabilities.py
+│       ├── state/
+│       │   ├── machine.py
+│       │   ├── repository.py
+│       │   └── transitions.py
+│       ├── execution/
+│       │   ├── broker.py
+│       │   ├── adapters.py
+│       │   └── idempotency.py
+│       ├── evidence/
+│       │   ├── outbox.py
+│       │   ├── event_writer.py
+│       │   └── integrity.py
+│       └── recovery/
+│           ├── controller.py
+│           └── reconciliation.py
+└── tests/
+    ├── unit/
+    ├── integration/
+    ├── adversarial/
+    └── crash_recovery/
+```
+
+Das ist bewusst ein Vorschlag für die Modulgrenzen. Ich würde nicht jeden Ordner sofort mit eigenem Code füllen. Erst die kritische Ausführungskette, dann die zusätzlichen Funktionen.
+
+## 7. Umsetzungsreihenfolge
+
+1. Phase 1 — Minimaler sicherer Kern
+
+   Action Contract, Policy-Prüfung, obligatorisches Gate, Zustandsautomat und PostgreSQL. Zwei oder drei harmlose Demo-Tools reichen zunächst.
+
+2. Phase 2 — Invarianten und adversariale Tests
+
+   Direkte Gate-Umgehung, veraltete Freigaben, manipulierte Argumente, doppelte Aufrufe, Policy-Ausfall und Absturz zwischen Ausführung und Verbuchung testen.
+
+3. Phase 3 — Evidence
+
+   Transaktionale Outbox, kanonische Ereignisse, Hash-Verkettung, unabhängige Checkpoints und Wiederherstellungsprüfung.
+
+4. Phase 4 — Isolation und Recovery
+
+   Worker mit minimalen Rechten, Netzwerkbegrenzung, Ergebnisabgleich, Quarantäne und kontrollierte manuelle Freigabe.
+
+5. Phase 5 — Skalierung
+
+   Temporal für langlebige verteilte Workflows, Envoy für geeignete Netzwerkgrenzen, gegebenenfalls ein externer Transparency Log und zusätzliche Observability-Backends.
+
+## Meine Empfehlung
+
+Ich würde diesen Stack zunächst als Referenzimplementierung für überprüfbare Sicherheitsinvarianten behandeln. Die zentrale Abnahmemetrik ist nicht, wie viele Angriffe ein LLM-Guardrail erkennt, sondern ob eine Aktion trotz fehlerhaftem Modell, manipuliertem Kontext, Ausfall oder Wiederholung unzulässig ausgeführt werden kann.
+
+Ein wichtiger Vorbehalt: Auch dieser Entwurf garantiert nicht automatisch Sicherheit. Ein kompromittierter Gate-Prozess, ein missbrauchtes Datenbankkonto oder ein manipulierter vertrauenswürdiger Policy-Stand können weiterhin kritische Fehler ermöglichen. Dafür brauchst du getrennte Rechte, abgesicherte Deployments, Schlüsselverwaltung und Tests gegen genau diese Vertrauensgrenzen.
+
+Der nächste sinnvolle Schritt wäre deshalb, aus dem Entwurf eine v0.1-Spezifikation mit konkreten Invarianten, Zustandsübergängen, SQL-Schema, OPA-Regeln und verpflichtenden Negativtests abzuleiten. Damit hättest du nicht nur eine Architektur, sondern eine prüfbare Bauanleitung.
