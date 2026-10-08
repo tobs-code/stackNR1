@@ -34,7 +34,7 @@ def repo():
     sql = open(os.path.abspath(SCHEMA), encoding="utf-8").read()
     with _db() as c:
         c.execute(sql)
-        for t in ("outbox_events", "state_transitions", "action_transitions",
+        for t in ("recovery_jobs", "outbox_events", "state_transitions", "action_transitions",
                   "policy_decisions", "authorization_records", "actions",
                   "records", "runs"):
             c.execute(f"DELETE FROM {t}")
