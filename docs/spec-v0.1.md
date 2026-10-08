@@ -1,7 +1,11 @@
-# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 2
+# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 3
 
-Abgeleitet aus `read.me`, überarbeitet nach Review (P0-Punkte eingearbeitet).
-Status: Entwurf, keine Implementierung. Abnahme erst nach §8-Checkliste.
+Abgeleitet aus `read.me`, überarbeitet nach Reviews.
+Rev. 3 fixt drei Blocker aus dem Spec-vs-Repo-Review:
+(B1) Ergebnis-Speicherung für Idempotency-Replay,
+(B2) mehrere Transitionen pro Action,
+(B3) vollständiger rekonstruierbarer Authorization Record.
+Status: EINGEFROREN (siehe BUILD_MANIFEST.md). Keine stillen Änderungen.
 
 ## 0. Scope v0.1
 
@@ -37,7 +41,12 @@ liegen. Erst danach externer Effect mit echtem `outcome_unknown`.
   mit kanonischem Hash über: canon(action+args, JCS) + Typen + actor_id +
   permissions + target + betroffene Ressourcen-Versionen + preconditions +
   policy_version + action_id + expiry (vertrauenswürdige Zeit). Hash allein
-  authentifiziert nichts — Record wird vor Effect neu geladen und verglichen.
+  authentifiziert nichts — Record wird   vor dem Effect. Kanonisches Feldset (JCS, Schlüssel sortiert):
+  `{action, target, args, actor_id, permissions (sortiert), target,
+  expected_resource_version, preconditions, policy_version, context,
+  action_id, expires_at}` — exakt die in `authorization_records` (+`actions`)
+  persistierten Werte; der Worker lädt Record + Action-Zeile und vergleicht
+  Feld für Feld plus Hash.
 - **I4 Stale-Reject (P0-fix):** Versionsprüfung + Übergang **atomar**
   (`SELECT ... FOR UPDATE` auf betroffener Zeile oder Compare-and-Swap-
   Update `WHERE version = expected`). TOCTOU zwischen Check und Write ⇒
@@ -142,15 +151,28 @@ CREATE TABLE actions (
                       'confirmed','failed','outcome_unknown',
                       'committed','quarantined','rejected','denied')),
   expected_resource_version INT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  result JSONB NULL,                -- B1: gespeichertes Ergebnis; atomar mit
+                                    -- Effect geschrieben, Replay liest hier
+  result_written_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK ((status NOT IN ('confirmed','committed') OR result IS NOT NULL))
 );
 
+-- B3: vollständiger Authorization Record. Alle Hash-Eingaben sind hier
+-- oder per FK in actions persistiert; der Worker rekonstruiert daraus
+-- denselben canonical_hash (JCS über das Feldset unten, §1 I3).
 CREATE TABLE authorization_records (
   action_id TEXT PRIMARY KEY REFERENCES actions(action_id),
   canonical_hash TEXT NOT NULL,
+  action TEXT NOT NULL,              -- aus actions gespiegelt, Reload-Vergleich
+  target TEXT NOT NULL,              -- normalisierte Ziel-ID
+  args_hash TEXT NOT NULL,           -- canon(action+args)
   actor_id TEXT NOT NULL,
   permissions TEXT[] NOT NULL,
+  expected_resource_version INT NOT NULL,
+  preconditions JSONB NOT NULL,      -- geprüfte Preconditions (Snapshot)
   policy_version TEXT NOT NULL,
+  context_hash TEXT NOT NULL,        -- Hash über Run-Status + Versionen
   expires_at TIMESTAMPTZ NOT NULL
 );
 
@@ -163,16 +185,20 @@ CREATE TABLE policy_decisions (
   PRIMARY KEY (action_id, policy_version, context_hash)
 );
 
+-- B2: mehrere Transitionen pro action_id (Lebenszyklus §3).
+-- Fachlicher Ressourcen-Übergang nur für demo_update_record; für
+-- demo_read keine Zeile hier (kein Ressourcen-Effect).
 CREATE TABLE state_transitions (
   seq BIGSERIAL PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES runs(run_id),
-  action_id TEXT NOT NULL REFERENCES actions(action_id) UNIQUE,
+  action_id TEXT NOT NULL REFERENCES actions(action_id),
   record_id TEXT NOT NULL REFERENCES records(record_id),
   old_version INT NOT NULL,
   new_version INT NOT NULL,
   CHECK (new_version = old_version + 1),
   UNIQUE (record_id, old_version)
 );
+CREATE INDEX ON state_transitions (action_id, seq);
 
 CREATE TABLE outbox_events (
   event_id TEXT PRIMARY KEY,
@@ -204,8 +230,10 @@ CREATE TABLE recovery_jobs (
 
 Transaktionsregeln:
 - Demo-Write: `UPDATE records SET … WHERE record_id=… AND version=expected`
-  (CAS) + `actions.status` + `state_transitions` + `outbox_events` in **einer**
-  Transaktion. `rowcount=0` ⇒ Stale-Reject.
+  (CAS) + `actions.status='committed' + actions.result` + `state_transitions`
+  + `outbox_events` in **einer** Transaktion. `rowcount=0` ⇒ Stale-Reject.
+  Replay (gleicher Key, gleicher Payload, abgeschlossen) liest `actions.result`,
+  führt keinen Effect aus.
 - Event-Kette pro Run serialisiert (UNIQUE(run_id, sequence),
   Sequenzvergabe unter Run-Lock); Lücke/Duplikat ⇒ Writes stoppen, kein
   Neustart der Kette durch Überschreiben; Checkpoint ausserhalb des
