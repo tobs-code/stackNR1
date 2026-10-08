@@ -199,7 +199,10 @@ class Repository:
         """Autorisierung in-Transaktion prüfen. Wirft ohne Effect."""
         from ..contracts import AuthorizationRecord
         cur.execute(
-            "SELECT * FROM authorization_records WHERE action_id=%s FOR UPDATE",
+            # Absichtlich KEIN FOR UPDATE: Worker hat (per Grant) kein
+            # UPDATE-Recht auf authorization_records; Unveränderlichkeit
+            # folgt aus den Rollen-Grants, nicht aus dem Zeilen-Lock.
+            "SELECT * FROM authorization_records WHERE action_id=%s",
             (action_id,))
         rec = cur.fetchone()
         if rec is None:
