@@ -2,8 +2,9 @@
 
 - Datum: 2026-10-09
 - Matrix: `docs/campaign.md` (eingefroren vor dem Lauf)
-- Geprüfter Commit: `e82df9f` (Kampagnen-Tests in diesem Commit enthalten;
-  Hinweis auf `325eea6` + uncommittet in Rev. 1 des Reports war falsch)
+- Geprüfter Code-Commit: `e91b84960df0ec4fb81286e47494d349a9527524`
+  (81/81-Lauf auf genau diesem Code-Stand; Matrix-Provenienz bleibt separat:
+  `docs/campaign.md`, eingefroren vor dem Kampagnen-Lauf)
 - Testbefehl: `$env:PYTHONPATH="src"; python3 -m pytest tests/ -q -p no:cacheprovider`
   (Workdir `agent-control-stack/`)
 - Python: 3.13.7; pydantic 2.12.0 (installiert; Pin in pyproject: 2.10.4),
