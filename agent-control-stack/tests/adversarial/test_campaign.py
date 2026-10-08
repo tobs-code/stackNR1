@@ -131,28 +131,50 @@ def test_reconcile_after_commit_beats_version_drift(live):
     assert insp.outcome == "replayed" and insp.result == first
 
 
+S = {"SELECT"}; SI = {"SELECT", "INSERT"}; SIU = {"SELECT", "INSERT", "UPDATE"}
+SIUU = {"SELECT", "INSERT", "UPDATE"}  # recovery_jobs/checkpoints (UPDATE=Status/Head)
+SU = {"SELECT", "UPDATE"}
+
+FULL_MATRIX = {
+    # Tabelle: gate / worker / recovery
+    "runs": (S, S, S),
+    "records": (S, SU, S),
+    "actions": (SI, SIU, SU),
+    "authorization_records": (SI, S, S),
+    "policy_decisions": (SI, set(), S),
+    "action_transitions": (SI, SI, SI),
+    "state_transitions": (set(), SI, S),
+    "outbox_events": (set(), SI, S),
+    "recovery_jobs": (set(), set(), SIUU),
+    "evidence_ledger": (S, SI, S),  # gate+recovery: SELECT (003), worker: SI
+    "evidence_checkpoints": (set(), S, SIUU),
+}
+
+
 def test_grant_matrix_exact(live):
-    """D6: effektive Privilegien je Rolle, keine Extras."""
+    """D6 vollständig: alle Runtime-Rollen × alle Tabellen + Sequenzen."""
     live  # noqa: B018 — Fixture für DB-Setup
-    expected = {
-        ("stack_gate", "authorization_records"): {"SELECT", "INSERT"},
-        ("stack_worker", "authorization_records"): {"SELECT"},
-        ("stack_recovery", "authorization_records"): {"SELECT"},
-        ("stack_worker", "records"): {"SELECT", "UPDATE"},
-        ("stack_gate", "records"): {"SELECT"},
-        ("stack_worker", "outbox_events"): {"SELECT", "INSERT"},
-        ("stack_gate", "outbox_events"): set(),
-        ("stack_worker", "evidence_checkpoints"): {"SELECT"},
-        ("stack_recovery", "evidence_checkpoints"): {"SELECT", "INSERT", "UPDATE"},
-    }
     with _admin() as c, c.cursor() as cur:
-        for (role, table), want in expected.items():
-            cur.execute(
-                "SELECT privilege_type FROM information_schema.role_table_grants"
-                " WHERE grantee=%s AND table_schema='public' AND table_name=%s",
-                (role, table))
-            got = {r[0] for r in cur.fetchall()}
-            assert got == want, (role, table, got)
+        for table, (g, w, r) in FULL_MATRIX.items():
+            for role, want in (("stack_gate", g), ("stack_worker", w),
+                               ("stack_recovery", r)):
+                cur.execute(
+                    "SELECT privilege_type FROM information_schema.role_table_grants"
+                    " WHERE grantee=%s AND table_schema='public' AND table_name=%s",
+                    (role, table))
+                got = {x[0] for x in cur.fetchall()}
+                assert got == want, (role, table, got)
+        cur.execute(
+            "SELECT sequence_name FROM information_schema.sequences"
+            " WHERE sequence_schema='public'")
+        for (seq,) in cur.fetchall():
+            for role in ("stack_gate", "stack_worker", "stack_recovery"):
+                # Sequenz-Rechte stehen nicht in role_table_grants → Funktion.
+                cur.execute("SELECT has_sequence_privilege(%s, %s, 'USAGE'),"
+                            " has_sequence_privilege(%s, %s, 'SELECT'),"
+                            " has_sequence_privilege(%s, %s, 'UPDATE')",
+                            (role, seq, role, seq, role, seq))
+                assert cur.fetchone() == (True, True, False), (role, seq)
 
 
 def test_verifier_never_writes(live):

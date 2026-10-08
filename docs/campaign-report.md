@@ -2,18 +2,22 @@
 
 - Datum: 2026-10-09
 - Matrix: `docs/campaign.md` (eingefroren vor dem Lauf)
-- Code-Stand: Commit `325eea6` + uncommittete Kampagnen-Tests (dieser Report
-  wird mit demselben Commit gepusht; SHA siehe Git-Log)
+- Geprüfter Commit: `e82df9f` (Kampagnen-Tests in diesem Commit enthalten;
+  Hinweis auf `325eea6` + uncommittet in Rev. 1 des Reports war falsch)
+- Testbefehl: `$env:PYTHONPATH="src"; python3 -m pytest tests/ -q -p no:cacheprovider`
+  (Workdir `agent-control-stack/`)
+- Python: 3.13.7; pydantic 2.12.0 (installiert; Pin in pyproject: 2.10.4),
+  psycopg[binary] 3.2.4, pytest 8.3.4 (8.4.2 installiert), httpx 0.28.1
 - Umgebung: Postgres 16 (Container `stack-pg`), OPA 0.68 (`stack-opa`),
-  Test-DB `control_stack_test` (frisch migriert 001–003)
+  Test-DB `control_stack_test` (migriert 001–003 via `mig/runner.py`)
 
-## Ergebnis: 67/67 grün
+## Ergebnis: 78/78 grün (Stand e82df9f-Nachlauf: +11 Worker/Closeout-Tests)
 
 | Suite | Tests |
 |---|---|
 | unit (contracts, JCS, OPA-Client) | 16 |
-| integration state/gate/execution/recovery/roles/evidence | 42 |
-| adversarial campaign (C1–C5, A4, D2, D6, E) | 9 |
+| integration state/gate/execution/recovery/roles/evidence/worker | 47 |
+| adversarial campaign + closeout (C1–C5, A4, D2, D6 voll, E, I6, I7, demo_read) | 15 |
 
 ## Abdeckung je Matrix-Gruppe
 

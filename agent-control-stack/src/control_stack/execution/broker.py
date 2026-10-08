@@ -18,6 +18,7 @@ from ..state.repository import (
     AuthorizationMissingError,
     IdempotencyReplay,
     Repository,
+    StaleVersionError,
 )
 from .adapters import AdapterError, demo_update_params
 from .idempotency import key_for
@@ -36,7 +37,11 @@ class OutcomeUnknown(Exception):
 def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
             event_id: str | None = None,
             run_sequence: int = 1,
-            prev_event_hash: str = "0" * 64) -> dict | IdempotencyReplay:
+            prev_event_hash: str = "0" * 64,
+            _test_hook: str | None = None) -> dict | IdempotencyReplay:
+    """_test_hook (NUR Tests): 'lost_ack' wirft nach erfolgreichem Commit
+    OutcomeUnknown (deterministischer ACK-Verlust); 'kill_before_commit'
+    simuliert Backend-Tod vor CAS (Rollback + OutcomeUnknown)."""
     repo = Repository(dsn)
     try:
         action = repo.load_action(action_id)
@@ -65,6 +70,18 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
         raise ExecutionDenied("action/target weichen vom Record ab")
     if not record.verify(arguments):
         raise ExecutionDenied("Record-Verify fehlgeschlagen")
+    if action["action"] == "demo_read":
+        if set(arguments) != {"record_id"}:
+            raise ExecutionDenied("demo_read: nur record_id")
+        try:
+            return repo.execute_read(
+                action_id=action_id, record_id=record.target,
+                guard_arguments=arguments, guard_actor_id=actor_id)
+        except (AuthorizationMissingError, AuthorizationExpiredError,
+                AuthorizationMismatchError, StaleVersionError) as e:
+            raise ExecutionDenied(str(e)) from e
+        except psycopg.OperationalError as e:
+            raise OutcomeUnknown(action_id, str(e)) from e
     if action["action"] != "demo_update_record":
         raise ExecutionDenied(f"nicht ausführbar: {action['action']}")
     try:
@@ -73,8 +90,11 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
         raise ExecutionDenied(str(e)) from e
 
     payload = args_hash(arguments)
+    if _test_hook == "kill_before_commit":
+        # Deterministischer Backend-Tod: Tx bricht ab, Ausgang unbekannt.
+        raise OutcomeUnknown(action_id, "injected kill_before_commit")
     try:
-        return repo.commit_demo_update(
+        out = repo.commit_demo_update(
             run_id=action["run_id"], action_id=action_id,
             record_id=params["record_id"], new_status=params["new_status"],
             expected_version=record.expected_resource_version,
@@ -83,6 +103,10 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
             event_id=event_id or str(uuid.uuid4()),
             run_sequence=run_sequence, prev_event_hash=prev_event_hash,
             guard_arguments=arguments, guard_actor_id=actor_id)
+        if _test_hook == "lost_ack":
+            # Commit steht in der DB, ACK geht "verloren".
+            raise OutcomeUnknown(action_id, "injected lost_ack")
+        return out
     except (AuthorizationMissingError, AuthorizationExpiredError,
             AuthorizationMismatchError) as e:
         raise ExecutionDenied(str(e)) from e

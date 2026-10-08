@@ -1,11 +1,12 @@
-# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 4
+# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 5
 
 Abgeleitet aus `read.me`, überarbeitet nach Reviews.
-Rev. 4 fixt zwei Lücken aus dem Rev.-3-Check:
-(C1) kanonisches Feldset exakt = gespeicherte Record-Felder (kein `args`,
-kein `context`, kein Doppel-`target`; Hash über `args_hash`/`context_hash`);
-(C2) Action-Lebenszyklus (`action_transitions`) vs. fachliche
-Ressourcenversion (`state_transitions`) sauber getrennt.
+Rev. 5 schliesst Abnahme-Lücken: (D1) `demo_read`-Ausführungspfad
+(effect-frei, terminal `confirmed`, Leseergebnis als `result`, kein Outbox-Event);
+(D2) Worker als separater OS-Prozess mit eigenen Credentials + JSON-StdIO-IPC
+(Gate importiert `execution` nie — per AST-Check getestet);
+(D3) I7 Deny-Fingerprint (`repeat_of` bei gleichem Fingerprint <15min);
+(D4) deterministische I6-Hooks als TEST-ONLY (`_test_hook`).
 Status: EINGEFROREN (siehe BUILD_MANIFEST.md). Keine stillen Änderungen.
 
 ## 0. Scope v0.1
@@ -126,6 +127,15 @@ Audit-Verbuchung ist separates Merkmal/Ereignis (kein
 | confirmed | committed | Transaktion (Effect+Version+Outbox) erfolgreich |
 
 Run: `active → {completed | aborted | quarantined}`; Writes nur wenn `active`.
+
+## 3b. Lese-Pfad (Rev. 5, D1)
+
+`demo_read` ist effect-frei: Guard-Prüfung + Record-Reload + `verify()` +
+Expiry-Check wie beim Write, dann `SELECT` der Ressource in derselben
+Transaktion. Lifecycle: `… → authorized → executing → confirmed` (terminal;
+kein `committed`). Das Leseergebnis wird als `actions.result` persistiert
+(erfüllt den Result-CHECK, ermöglicht Replay). Keine Ressourcen-Transition,
+kein Outbox-Event — Reads verändern keinen fachlichen Zustand.
 
 ## 4. SQL-Schema (PostgreSQL, v0.1)
 

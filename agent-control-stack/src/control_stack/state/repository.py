@@ -193,6 +193,34 @@ class Repository:
                  new_version, payload_hash, prev_event_hash))
             return result
 
+    # -- Read-Pfad (Rev. 5): effect-frei, kein CAS, keine Ressourcen-Transition,
+    # kein Outbox-Event. Lifecycle endet terminal bei confirmed; das
+    # Leseergebnis wird als result persistiert (CHECK + Replay).
+    def execute_read(self, *, action_id: str, record_id: str,
+                     guard_arguments: dict, guard_actor_id: str) -> dict:
+        with self._conn() as c, c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("SELECT * FROM actions WHERE action_id=%s FOR UPDATE",
+                        (action_id,))
+            action = cur.fetchone()
+            if action is None or action["action"] != "demo_read":
+                raise AuthorizationMissingError(f"keine lesbare Action: {action_id}")
+            self._enforce_guard(cur, action_id, guard_arguments, guard_actor_id)
+            cur.execute("SELECT record_id, status, version FROM records WHERE record_id=%s",
+                        (record_id,))
+            rec = cur.fetchone()
+            if rec is None:
+                raise StaleVersionError(record_id, -1, "missing")
+            result = {"record_id": rec["record_id"], "status": rec["status"],
+                      "version": rec["version"]}
+            cur.execute("UPDATE actions SET status='confirmed', result=%s::jsonb,"
+                        " result_written_at=now() WHERE action_id=%s",
+                        (json.dumps(result), action_id))
+            cur.execute(
+                "INSERT INTO action_transitions (action_id, old_status, new_status)"
+                " VALUES (%s,'authorized','executing'),(%s,'executing','confirmed')",
+                (action_id, action_id))
+            return result
+
     @staticmethod
     def _enforce_guard(cur: Any, action_id: str, arguments: dict,
                        actor_id: str) -> None:

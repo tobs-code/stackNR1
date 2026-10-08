@@ -73,10 +73,23 @@ def authorize(dsn: str, opa: OPAClient, raw_proposal: dict,
         }
         decision = opa.decide(opa_input)  # PolicyError => fail closed, nichts persistiert
         if not decision.granted:
+            # I7 Deny-Fingerprint: gleiche (run, action, target, args) kürzlich
+            # denied + unveränderte Voraussetzungen ⇒ Wiederholungsversuch.
+            ah_early = args_hash(proposal.arguments)
+            cur.execute(
+                "SELECT action_id FROM actions WHERE run_id=%s AND action=%s"
+                " AND target=%s AND args_hash=%s AND status='denied'"
+                " AND created_at > now() - interval '15 minutes'"
+                " ORDER BY created_at DESC LIMIT 1",
+                (proposal.run_id, proposal.action, proposal.target, ah_early))
+            prior = cur.fetchone()
             _persist_denied(cur, proposal, actor_id, decision, context_hash)
             c.commit()
-            raise GateDenied(f"denied: allow={decision.allow} "
-                             f"violations={list(decision.violations)}", decision)
+            reason = (f"denied: allow={decision.allow} "
+                      f"violations={list(decision.violations)}")
+            if prior is not None:
+                reason += f" repeat_of={prior['action_id']}"
+            raise GateDenied(reason, decision)
 
         ah = args_hash(proposal.arguments)
         fields = record_fields(
