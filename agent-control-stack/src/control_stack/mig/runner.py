@@ -12,7 +12,8 @@ import psycopg
 
 MIGRATIONS = ["001_schema.sql", "002_roles.sql", "003_evidence.sql",
                "004_seq_least_privilege.sql", "005_phase1_boundary.sql",
-               "006_owner_schema_usage.sql", "007_test_kill_grant.sql"]
+               "006_owner_schema_usage.sql", "007_test_kill_grant.sql",
+               "008_default_privileges_closed.sql"]
 
 
 def migrate(admin_dsn: str) -> list[str]:

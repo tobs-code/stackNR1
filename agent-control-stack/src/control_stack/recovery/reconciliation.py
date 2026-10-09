@@ -22,20 +22,24 @@ class Inspection:
 
 def _has_consistent_effect(cur: psycopg.Cursor, action: dict) -> bool:
     """Prüft, ob genau dieser Action ein konsistenter Ressourcen-Effect
-    zugeordnet ist: Transition mit passendem Ziel und passender Version
-    aus dem gespeicherten Resultat."""
+    zugeordnet ist: Transition mit passendem Run, Ziel sowie alter/neuer
+    Version aus dem gespeicherten Resultat. Teilspuren (z. B. nur
+    record_id/new_version bei abweichendem Rest) genügen nicht."""
     try:
         result = dict(action["result"])
         want_record = result.get("record_id")
+        want_old = result.get("old_version")
         want_new = result.get("new_version")
     except (TypeError, ValueError):
         return False
-    if want_record is None or want_new is None:
+    if want_record is None or want_old is None or want_new is None:
         return False
     cur.execute(
         "SELECT COUNT(*) AS n FROM state_transitions"
-        " WHERE action_id=%s AND record_id=%s AND new_version=%s",
-        (action["action_id"], want_record, want_new))
+        " WHERE action_id=%s AND run_id=%s AND record_id=%s"
+        " AND old_version=%s AND new_version=%s",
+        (action["action_id"], action["run_id"],
+         want_record, want_old, want_new))
     row = cur.fetchone()
     return row is not None and row["n"] == 1
 
