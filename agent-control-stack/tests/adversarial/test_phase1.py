@@ -4,6 +4,7 @@ Regeln: echte Runtime-Rollen, persistente DB-Prüfung, kein reines
 Exception-Assert. Privilegierte Fixtures (Owner-Eingriffe) sind je Test
 als solche markiert und stehen NICHT für Runtime-Angriffsmöglichkeiten.
 """
+import json
 import os
 import threading
 import uuid
@@ -249,6 +250,56 @@ def test_f4_real_commit_still_replays(live):
     assert insp.outcome == "replayed" and insp.result == first
 
 
+def test_f4_copied_result_without_own_transition_quarantined(live):
+    """F4: Resultat einer fremden Action kopiert (keine eigene Transition,
+    PRIVILEGIERTE Fixture) ⇒ quarantined, nie Replay des fremden Resultats."""
+    opa, rid = live
+    rec, p = _auth(opa, rid)
+    first = execute(dsn("stack_worker"), str(rec.action_id), dict(p["arguments"]), ACTOR)
+    other = str(uuid.uuid4())
+    with _admin() as c:
+        c.execute("INSERT INTO records (record_id) VALUES ('rec-9')")
+        c.execute("ALTER TABLE actions DISABLE TRIGGER actions_insert_guard")
+        try:
+            c.execute(
+                "INSERT INTO actions (action_id, run_id, action, target, args_hash,"
+                " idempotency_key, idempotency_payload_hash, status,"
+                " expected_resource_version, result) VALUES (%s,%s,"
+                " 'demo_update_record','rec-9',%s,%s,%s,'committed',0,%s::jsonb)",
+                (other, rid, "0" * 64, f"{rid}:{other}", "0" * 64,
+                 json.dumps(first)))
+        finally:
+            c.execute("ALTER TABLE actions ENABLE TRIGGER actions_insert_guard")
+    insp = reconcile(dsn("stack_recovery"), other, rid)
+    assert insp.outcome == "quarantined"
+    with _admin() as c, c.cursor() as cur:
+        cur.execute("SELECT status FROM actions WHERE action_id=%s", (other,))
+        assert cur.fetchone()[0] == "quarantined"
+        cur.execute("SELECT version FROM records WHERE record_id='rec-1'")
+        assert cur.fetchone()[0] == 1  # nur der eine echte Effect existiert
+
+
+def test_f4_manipulated_result_despite_transition_quarantined(live):
+    """F4: echte Transition, aber nachträglich manipuliertes Resultat
+    (PRIVILEGIERTE Fixture, Owner-UPDATE) ⇒ quarantined statt Replay."""
+    opa, rid = live
+    rec, p = _auth(opa, rid)
+    aid = str(rec.action_id)
+    execute(dsn("stack_worker"), aid, dict(p["arguments"]), ACTOR)
+    with _admin() as c:
+        c.execute(
+            "UPDATE actions SET result=%s::jsonb WHERE action_id=%s",
+            (json.dumps({"record_id": "rec-1", "old_version": 0,
+                         "new_version": 2, "status": "approved"}), aid))
+    insp = reconcile(dsn("stack_recovery"), aid, rid)
+    assert insp.outcome == "quarantined"
+    with _admin() as c, c.cursor() as cur:
+        cur.execute("SELECT status FROM actions WHERE action_id=%s", (aid,))
+        assert cur.fetchone()[0] == "quarantined"
+        cur.execute("SELECT version FROM records WHERE record_id='rec-1'")
+        assert cur.fetchone()[0] == 1  # Effect selbst bleibt genau einer
+
+
 # -- F7 -----------------------------------------------------------------
 def test_f7_worker_cannot_write_records_directly(live):
     """F7-N1: direkter Ressourcen-Write als Worker ⇒ InsufficientPrivilege."""
@@ -326,6 +377,31 @@ def test_f7_gate_cannot_forge_terminal_actions(live):
         cur.execute("SELECT status FROM actions WHERE action_id=%s",
                     (str(rec.action_id),))
         assert cur.fetchone()[0] == "authorized"
+
+
+def test_009_new_functions_closed_by_default(live):
+    """009 (PRIVILEGIERT, Owner-Setup): neu angelegte Funktionen erhalten kein
+    PUBLIC EXECUTE (009-Effekt, nicht nur aktuelle ACL); explizite Grants
+    bleiben möglich."""
+    live  # noqa: B018 — Fixture für DB-Setup
+    with _admin() as c, c.cursor() as cur:
+        cur.execute("CREATE FUNCTION fn_review_probe() RETURNS void LANGUAGE sql"
+                    " AS $$SELECT$$")
+        cur.execute("SELECT proacl FROM pg_proc WHERE proname='fn_review_probe'")
+        acl = cur.fetchone()[0]
+        assert acl is None or not any("PUBLIC" in str(e) for e in acl), acl
+        cur.execute("SELECT has_function_privilege('stack_worker',"
+                    " 'fn_review_probe()', 'EXECUTE')")
+        assert cur.fetchone()[0] is False
+        cur.execute("SELECT has_function_privilege('stack_gate',"
+                    " 'fn_review_probe()', 'EXECUTE')")
+        assert cur.fetchone()[0] is False
+        # Expliziter Grant bleibt möglich (Positivkontrolle).
+        cur.execute("GRANT EXECUTE ON FUNCTION fn_review_probe() TO stack_worker")
+        cur.execute("SELECT has_function_privilege('stack_worker',"
+                    " 'fn_review_probe()', 'EXECUTE')")
+        assert cur.fetchone()[0] is True
+        cur.execute("DROP FUNCTION fn_review_probe()")
 
 
 def test_f7_legitimate_role_flow_still_works(live):
