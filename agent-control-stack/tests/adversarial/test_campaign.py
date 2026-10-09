@@ -136,17 +136,18 @@ SIUU = {"SELECT", "INSERT", "UPDATE"}  # recovery_jobs/checkpoints (UPDATE=Statu
 SU = {"SELECT", "UPDATE"}
 
 FULL_MATRIX = {
-    # Tabelle: gate / worker / recovery
+    # Tabelle: gate / worker / recovery (Phase 1, ADR-001: DB-erzwungene Grenze;
+    # geschützte Writes nur über DEFINER-Funktionen, direkte Worker-DML entzogen)
     "runs": (S, S, S),
-    "records": (S, SU, S),
-    "actions": (SI, SIU, SU),
+    "records": (S, S, S),
+    "actions": (SI, S, SU),
     "authorization_records": (SI, S, S),
     "policy_decisions": (SI, set(), S),
-    "action_transitions": (SI, SI, SI),
-    "state_transitions": (set(), SI, S),
-    "outbox_events": (set(), SI, S),
+    "action_transitions": (SI, S, SI),
+    "state_transitions": (set(), S, S),
+    "outbox_events": (set(), S, S),
     "recovery_jobs": (set(), set(), SIUU),
-    "evidence_ledger": (S, SI, S),  # gate+recovery: SELECT (003), worker: SI
+    "evidence_ledger": (S, S, S),  # gate+worker+recovery: SELECT; Writes nur via Funktion
     "evidence_checkpoints": (set(), S, SIUU),
 }
 
@@ -170,10 +171,12 @@ def test_grant_matrix_exact(live):
         cur.execute(
             "SELECT sequence_name FROM information_schema.sequences"
             " WHERE sequence_schema='public'")
-        # 004: nur benötigte Sequenzen je Rolle (least privilege).
+        # 004 + 005: nur benötigte Sequenzen je Rolle (least privilege).
+        # Worker schreibt nur über DEFINER-Funktionen (Owner-Kontext) und
+        # braucht deshalb keine Sequenzrechte mehr.
         want_seq = {
             "stack_gate": {"action_transitions_seq_seq"},
-            "stack_worker": {"action_transitions_seq_seq", "state_transitions_seq_seq"},
+            "stack_worker": set(),
             "stack_recovery": {"action_transitions_seq_seq"},
         }
         for (seq,) in cur.fetchall():
