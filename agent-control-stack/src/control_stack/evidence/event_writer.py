@@ -2,13 +2,16 @@
 
 - Verarbeitet bereits committed Events (bestätigt nichts nachträglich).
 - pro-Run-Advisory-Lock verhindert Chain-Forks bei konkurrierenden Writern.
-- Doppelverarbeitung: ON CONFLICT DO NOTHING + Hash-Vergleich; divergierender
+- Ledger-Write nur über fn_ledger_append (Owner-Kontext): direkter
+  Ledger-Zugriff per Runtime-Credentials ist entzogen (F7).
+- Doppelverarbeitung: vorhandener Hash wird verglichen; divergierender
   Hash bei gleicher event_id ⇒ TamperError (kein stilles Überschreiben).
 - Fehler ⇒ Rollback, Event bleibt ausstehend (Ledger-Zeile fehlt).
 """
 from __future__ import annotations
 
 import psycopg
+from psycopg import errors as _pgerrors
 
 from .integrity import GENESIS, event_hash
 from .outbox import claim_next
@@ -40,18 +43,13 @@ def process_next(dsn: str) -> str | None:
                        sequence=row["sequence"],
                        resource_version=row["resource_version"],
                        payload_hash=row["payload_hash"], prev_hash=prev)
-        cur.execute(
-            "INSERT INTO evidence_ledger (event_id, run_id, sequence, event_hash, prev_hash)"
-            " VALUES (%s,%s,%s,%s,%s) ON CONFLICT (event_id) DO NOTHING"
-            " RETURNING event_id",
-            (row["event_id"], row["run_id"], row["sequence"], h, prev))
-        if cur.fetchone() is None:
-            # Konkurrent war schneller: gespeicherten Hash prüfen, nie blind übernehmen.
-            cur.execute("SELECT event_hash, prev_hash FROM evidence_ledger"
-                        " WHERE event_id=%s", (row["event_id"],))
-            stored = cur.fetchone()
-            if stored is None or stored["event_hash"] != h or stored["prev_hash"] != prev:
-                raise TamperError(f"Ledger-Divergenz bei {row['event_id']}")
+        try:
+            cur.execute("SELECT fn_ledger_append(%s,%s,%s,%s,%s)",
+                        (row["event_id"], row["run_id"], row["sequence"], h, prev))
+        except _pgerrors.RaiseException as e:
+            if str(e).startswith("ledger_divergence"):
+                raise TamperError(f"Ledger-Divergenz bei {row['event_id']}") from e
+            raise
         return row["event_id"]
 
 

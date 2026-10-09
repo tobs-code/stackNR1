@@ -18,6 +18,7 @@ from ..state.repository import (
     AuthorizationMissingError,
     IdempotencyReplay,
     Repository,
+    RunInactiveError,
     StaleVersionError,
 )
 from .adapters import AdapterError, demo_update_params
@@ -73,12 +74,16 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
     if action["action"] == "demo_read":
         if set(arguments) != {"record_id"}:
             raise ExecutionDenied("demo_read: nur record_id")
+        # F1 (Read): angefragte Ressource muss dem autorisierten Ziel entsprechen.
+        if arguments.get("record_id") != record.target:
+            raise ExecutionDenied("demo_read: record_id weicht vom autorisierten Ziel ab")
         try:
             return repo.execute_read(
                 action_id=action_id, record_id=record.target,
                 guard_arguments=arguments, guard_actor_id=actor_id)
         except (AuthorizationMissingError, AuthorizationExpiredError,
-                AuthorizationMismatchError, StaleVersionError) as e:
+                AuthorizationMismatchError, RunInactiveError,
+                StaleVersionError) as e:
             raise ExecutionDenied(str(e)) from e
         except psycopg.OperationalError as e:
             raise OutcomeUnknown(action_id, str(e)) from e
@@ -88,6 +93,10 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
         params = demo_update_params(arguments)
     except AdapterError as e:
         raise ExecutionDenied(str(e)) from e
+    # F1 (Write): Effekt-Ziel muss dem autorisierten Ziel entsprechen.
+    # Die DB-Funktion erzwingt dies erneut atomar (Defense in Depth).
+    if params["record_id"] != record.target:
+        raise ExecutionDenied("Ziel weicht vom autorisierten Ziel ab")
 
     payload = args_hash(arguments)
     try:
@@ -106,7 +115,7 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
             raise OutcomeUnknown(action_id, "injected lost_ack")
         return out
     except (AuthorizationMissingError, AuthorizationExpiredError,
-            AuthorizationMismatchError) as e:
+            AuthorizationMismatchError, RunInactiveError) as e:
         raise ExecutionDenied(str(e)) from e
     except psycopg.OperationalError as e:
         # Commit-Ausgang unbekannt (Effect evtl. doch geschrieben) ⇒

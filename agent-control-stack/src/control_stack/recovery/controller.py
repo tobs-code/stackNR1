@@ -45,10 +45,11 @@ def reconcile(dsn: str, action_id: str, run_id: str) -> Inspection:
                 " VALUES (%s,%s,%s,'reconcile')", (job_id, run_id, action_id))
             c.commit()
             return insp
-        # quarantined
+        # quarantined — auch für inkonsistente committed-Zeilen (F4): ein
+        # Status-Snapshot ohne Effektnachweis darf nicht 'committed' bleiben.
+        # Echte Commits erreichen diesen Pfad nie (→ 'replayed').
         cur.execute(
-            "UPDATE actions SET status='quarantined' WHERE action_id=%s"
-            " AND status NOT IN ('committed')", (action_id,))
+            "UPDATE actions SET status='quarantined' WHERE action_id=%s", (action_id,))
         cur.execute(
             "INSERT INTO recovery_jobs (job_id, run_id, action_id, kind)"
             " VALUES (%s,%s,%s,'quarantine')", (job_id, run_id, action_id))

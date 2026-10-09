@@ -20,6 +20,26 @@ class Inspection:
     reason: str
 
 
+def _has_consistent_effect(cur: psycopg.Cursor, action: dict) -> bool:
+    """Prüft, ob genau dieser Action ein konsistenter Ressourcen-Effect
+    zugeordnet ist: Transition mit passendem Ziel und passender Version
+    aus dem gespeicherten Resultat."""
+    try:
+        result = dict(action["result"])
+        want_record = result.get("record_id")
+        want_new = result.get("new_version")
+    except (TypeError, ValueError):
+        return False
+    if want_record is None or want_new is None:
+        return False
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM state_transitions"
+        " WHERE action_id=%s AND record_id=%s AND new_version=%s",
+        (action["action_id"], want_record, want_new))
+    row = cur.fetchone()
+    return row is not None and row["n"] == 1
+
+
 def inspect_action(cur: psycopg.Cursor, action_id: str) -> Inspection:
     """Klassifiziert anhand persistierter Daten (Record + Action + Resource).
 
@@ -34,7 +54,13 @@ def inspect_action(cur: psycopg.Cursor, action_id: str) -> Inspection:
     if action is None:
         return Inspection("quarantined", None, "action unbekannt")
     if action["status"] == "committed" and action["result"] is not None:
-        return Inspection("replayed", dict(action["result"]), "commit persistiert")
+        # F4: Status-Snapshot + Resultat sind KEIN Nachweis. Replay nur, wenn
+        # die konsistente Effektspur (state_transitions mit passendem
+        # record_id/new_version) denselben Effect belegt — sonst Quarantäne.
+        if _has_consistent_effect(cur, action):
+            return Inspection("replayed", dict(action["result"]), "commit persistiert")
+        return Inspection("quarantined", None,
+                          "committed ohne konsistenten Effektnachweis")
     if action["status"] == "committed":
         return Inspection("quarantined", None,
                           "committed ohne Ergebnis: widersprüchlich")

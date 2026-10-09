@@ -30,6 +30,9 @@ def _db():
 
 @pytest.fixture()
 def live():
+    # Phase 1: Ausführungs-Grenze (DEFINER-Funktionen) muss migriert sein.
+    from control_stack.mig.runner import migrate
+    migrate(DSN)
     with _db() as c:
         c.execute(open(SCHEMA, encoding="utf-8").read())
         for t in ("recovery_jobs", "outbox_events", "state_transitions",
