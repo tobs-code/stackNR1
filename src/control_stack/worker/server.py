@@ -2,11 +2,14 @@
 
 Protokoll (jeweils genau eine JSON-Zeile auf stdin/stdout):
   Request:  {"op":"execute","action_id":...,"arguments":{...},"actor_id":...,
-             "event_id":...,"run_sequence":N,"prev_event_hash":...}
+             "event_id":...}
   Response: {"ok":true,"result":{...}|{"replay":...}}
             {"ok":false,"error":"...","class":"ExecutionDenied|OutcomeUnknown|..."}
   Unbekannte op ⇒ {"ok":false,...}, Exit 2. DSN ausschliesslich aus
   CONTROL_STACK_WORKER_DSN (eigene Worker-Credentials, nie Gate-DSN).
+
+  F5: Sequenz und Vorgängerzeiger sind kein Teil des Protokolls — sie entstehen
+  serverseitig; ein Aufrufer kann sie nicht setzen.
 
 Der Gate-Prozess ruft broker.execute() NIEMALS direkt auf (per Import-Check
 getestet); produktiver Pfad ist immer dieser Subprozess.

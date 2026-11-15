@@ -125,8 +125,7 @@ def test_f1_diverged_record_denied_at_execution(live):
             run_id=rid, action_id=aid, record_id="rec-2",
             new_status="approved", expected_version=0,
             idempotency_key=f"{rid}:{aid}", payload_hash=ah,
-            event_id=str(uuid.uuid4()), run_sequence=1,
-            prev_event_hash="0" * 64,
+            event_id=str(uuid.uuid4()),
             guard_arguments=dict(forged_args), guard_actor_id=ACTOR)
     assert _versions() == [("rec-1", 0, "pending"), ("rec-2", 0, "pending")]
     with _admin() as c, c.cursor() as cur:
@@ -354,9 +353,9 @@ def test_f7_worker_cannot_forge_evidence(live):
         with pytest.raises(errors.InsufficientPrivilege):
             c.execute(
                 "INSERT INTO outbox_events (event_id, run_id, action_id, sequence,"
-                " event_type, resource_version, payload_hash, previous_event_hash)"
-                " VALUES ('forge',%s,NULL,1,'state_committed',1,%s,%s)",
-                (rid, "0" * 64, "0" * 64))
+                " event_type, resource_version, payload_hash, prev_event_id)"
+                " VALUES ('forge',%s,NULL,1,'state_committed',1,%s,NULL)",
+                (rid, "0" * 64))
         with pytest.raises(errors.InsufficientPrivilege):
             c.execute(
                 "INSERT INTO evidence_ledger (event_id, run_id, sequence,"
@@ -418,12 +417,17 @@ def test_009_new_functions_closed_by_default(live):
 
 def test_f7_legitimate_role_flow_still_works(live):
     """F7-P: regulärer Gate-/Worker-/Recovery-Ablauf mit Rollen-DSNs."""
-    from control_stack.evidence import process_all, verify_run
+    from control_stack.evidence import (
+        process_all, verify_run, write_checkpoint,
+    )
     opa, rid = live
     rec, p = _auth(opa, rid)
     out = execute(dsn("stack_worker"), str(rec.action_id), dict(p["arguments"]), ACTOR)
     assert out["new_version"] == 1
     assert process_all(dsn("stack_worker")) != []
+    with _admin() as c, c.cursor() as cur:
+        cur.execute("SELECT event_hash FROM evidence_ledger ORDER BY sequence DESC LIMIT 1")
+        write_checkpoint(dsn("stack_recovery"), rid, cur.fetchone()[0])
     assert verify_run(dsn("stack_worker"), rid) == 1
     insp = reconcile(dsn("stack_recovery"), str(rec.action_id), rid)
     assert insp.outcome == "replayed"

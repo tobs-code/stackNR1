@@ -134,8 +134,7 @@ def test_same_key_other_payload_conflict(repo):
             run_id=rid, action_id=aid, record_id="rec-1",
             new_status="rejected", expected_version=1,
             idempotency_key=f"{rid}:{aid}", payload_hash="b" * 64,
-            event_id=str(uuid.uuid4()), run_sequence=2,
-            prev_event_hash="0" * 64,
+            event_id=str(uuid.uuid4()),
             guard_arguments={"record_id": "rec-1", "status": "rejected"},
             guard_actor_id=ACTOR)
 

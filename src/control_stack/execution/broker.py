@@ -38,12 +38,13 @@ class OutcomeUnknown(Exception):
 
 def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
             event_id: str | None = None,
-            run_sequence: int = 1,
-            prev_event_hash: str = "0" * 64,
             _test_hook: str | None = None) -> dict | IdempotencyReplay:
     """_test_hook (NUR Tests): 'lost_ack' wirft nach erfolgreichem Commit
     OutcomeUnknown (deterministischer ACK-Verlust); 'kill_mid_tx' beendet das
-    eigene Backend per pg_terminate_backend in offener Tx nach CAS."""
+    eigene Backend per pg_terminate_backend in offener Tx nach CAS.
+
+    F5: Es gibt bewusst kein `run_sequence`/`prev_event_hash`-Parameter — die
+    Event-Sequenz und der Vorgängerzeiger entstehen serverseitig."""
     repo = Repository(dsn)
     try:
         action = repo.load_action(action_id)
@@ -108,7 +109,6 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
             idempotency_key=key_for(action["run_id"], action_id),
             payload_hash=payload,
             event_id=event_id or str(uuid.uuid4()),
-            run_sequence=run_sequence, prev_event_hash=prev_event_hash,
             guard_arguments=arguments, guard_actor_id=actor_id,
             _test_hook=_test_hook if _test_hook != "lost_ack" else None)
         if _test_hook == "lost_ack":

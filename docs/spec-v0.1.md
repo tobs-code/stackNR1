@@ -1,4 +1,4 @@
-# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 7
+# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 8
 
 Abgeleitet aus `read.me`, überarbeitet nach Reviews.
 Rev. 5 schliesst Abnahme-Lücken: (D1) `demo_read`-Ausführungspfad
@@ -16,6 +16,12 @@ v0.1 ungenutzt und benennt `committed→quarantined` ausdrücklich als
 Integritäts-Übersteuerung. Dieselbe Kantenmenge ist in §4 als Pair-CHECK
 verankert; ab Phase 2 erzwingt die Datenbank zusätzlich, dass
 `actions.status` dem letzten `action_transitions`-Eintrag entspricht.
+Rev. 8 (F5/F6/F8): §4 vergibt die Event-Sequenz serverseitig unter Run-Lock und
+ersetzt den frei gelieferten Vorgänger-Hash durch einen serverseitig gesetzten
+`prev_event_id`-Zeiger; der Verifier prüft Kontinuität ab 1. `evidence_checkpoints`
+wird append-only und abstammungsgeprüft, der Verifier liest den Checkpoint selbst
+und verlangt ihn. Der Idempotenzkonflikt schreibt genau ein
+`idempotency_conflict`-Ereignis, ohne Effect.
 Status: EINGEFROREN (siehe BUILD_MANIFEST.md). Keine stillen Änderungen.
 
 ## 0. Scope v0.1
@@ -270,7 +276,7 @@ CREATE TABLE outbox_events (
   event_id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES runs(run_id),
   action_id TEXT REFERENCES actions(action_id),
-  sequence BIGINT NOT NULL,
+  sequence BIGINT NOT NULL,          -- serverseitig, lückenlos ab 1
   event_type TEXT NOT NULL CHECK (event_type IN
     ('action_proposed','action_validated','action_rejected','policy_allowed',
      'policy_denied','execution_started','execution_confirmed',
@@ -278,10 +284,23 @@ CREATE TABLE outbox_events (
      'recovery_started','recovery_resolved','idempotency_conflict')),
   resource_version INT NOT NULL,
   payload_hash TEXT NOT NULL,
-  previous_event_hash TEXT NOT NULL,
+  -- Vorgängerbezug als Zeiger, nicht als Aufrufer-Hash (Rev. 8). Die DB setzt
+  -- ihn unter Run-Lock; der Writer löst ihn zum prev_hash der Kette auf.
+  prev_event_id TEXT REFERENCES outbox_events(event_id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (run_id, sequence)
 );
+
+CREATE TABLE evidence_checkpoints (
+  checkpoint_id BIGSERIAL PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
+  head_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Append-only: kein UPDATE/DELETE für Runtime-Rollen. Der neueste Checkpoint
+-- je Run (max checkpoint_id) ist der Anker; ein neuer Head muss Nachfahre des
+-- vorherigen sein (Abstammungsprüfung in fn_write_checkpoint).
+CREATE INDEX ON evidence_checkpoints (run_id, checkpoint_id);
 
 CREATE TABLE recovery_jobs (
   job_id TEXT PRIMARY KEY,
@@ -300,10 +319,21 @@ Transaktionsregeln:
   + `outbox_events` in **einer** Transaktion. `rowcount=0` ⇒ Stale-Reject.
   Replay (gleicher Key, gleicher Payload, abgeschlossen) liest `actions.result`,
   führt keinen Effect aus.
-- Event-Kette pro Run serialisiert (UNIQUE(run_id, sequence),
-  Sequenzvergabe unter Run-Lock); Lücke/Duplikat ⇒ Writes stoppen, kein
-  Neustart der Kette durch Überschreiben; Checkpoint ausserhalb des
-  Event-Schreibers sichern.
+- Event-Kette pro Run serialisiert (UNIQUE(run_id, sequence)). Die Sequenz wird
+  **serverseitig** unter Run-Lock als `COALESCE(MAX(sequence),0)+1` vergeben und
+  `prev_event_id` zeigt auf das Vorgänger-Event; beides ist kein Aufrufer-Parameter.
+  Der Writer leitet `prev_hash` aus dem Vorgänger ab, prüft die lückenlose Folge
+  und schreibt nur über `fn_ledger_append`. Lücke/Duplikat/Müll-Zeiger ⇒ Commit
+  scheitert oder der Verifier schlägt an; kein Neustart der Kette durch
+  Überschreiben.
+- Checkpoint: append-only, je Run der höchste `checkpoint_id`. Ein neuer Head
+  muss Nachfahre des vorherigen Checkpoints sein. Der Verifier liest den
+  Checkpoint selbst (kein Aufrufer-Parameter) und verlangt ihn für die Abnahme;
+  ohne Anker ist Abschneiden prinzipiell nicht erkennbar.
+- Idempotenzkonflikt: gleicher Key mit anderem Payload ⇒ Reject **und** genau ein
+  `idempotency_conflict`-Ereignis in derselben Transaktion, ohne Effect. Das
+  Ereignis wird vor jedem Effekt geschrieben und je (action_id, payload_hash)
+  dedupliziert.
 
 ## 5. OPA-Regeln (Rego v1, P0-fix)
 
@@ -354,7 +384,8 @@ PASS = kein unzulässiger Effect + Nachweis-Ereignis vorhanden.
 2. Stale-Version (parallele CAS-Konkurrenz) ⇒ genau ein Gewinner, Rest Reject.
 3. Args nach Freigabe geändert (Hash-Mismatch beim Reload) ⇒ Reject.
 4. Doppelaufruf gleicher Key/gleicher Payload (parallel) ⇒ genau 1 Effect.
-5. Gleicher Key/anderer Payload ⇒ hart ablehnen + `idempotency_conflict`.
+5. Gleicher Key/anderer Payload ⇒ hart ablehnen + genau ein
+   `idempotency_conflict`-Ereignis, kein Effect.
 6. OPA gestoppt/timeout ⇒ Deny, alles blockiert.
 7. Absturz nach Effect vor Commit (nur für späteren externen Effect;
    für DB-Write per Transaktion nicht möglich) ⇒ `outcome_unknown` +
@@ -366,12 +397,12 @@ PASS = kein unzulässiger Effect + Nachweis-Ereignis vorhanden.
 
 1. **Manual Approval:** aus v0.1 gestrichen → `quarantined` + `recovery_jobs`
    (`quarantine`). Keine Approval-Tabelle in v0.1.
-2. **Hash-Kette:** pro Run serialisiert, Sequenz unter Lock, Checkpoint
-   ausserhalb des Schreibers.
+2. **Hash-Kette:** pro Run serialisiert, Sequenz serverseitig unter Lock,
+   Vorgängerzeiger serverseitig; Checkpoint append-only ausserhalb des Schreibers.
 3. **Config-Schutz:** SHA-Pin fest im Deployment hinterlegt (nicht nur in
    veränderbarer `security.yaml`); signierte Config später.
 
-## 8. Abnahme-Checkliste (Rev. 7, evidenzgebunden)
+## 8. Abnahme-Checkliste (Rev. 8, evidenzgebunden)
 
 Jede PASS-Markierung verweist auf konkrete Tests; Status pro Invariante:
 PASS / PARTIAL / OPEN. Nicht implementierter Schutz gilt als OPEN, nie als PASS.
@@ -386,19 +417,23 @@ PASS / PARTIAL / OPEN. Nicht implementierter Schutz gilt als OPEN, nie als PASS.
 - [x] **I4 Atomar — PASS** (CAS-Gewinner-Test, Trigger C1–C5 Voll-Rollback,
   Race A4 ohne Transition).
 - [x] **I5 Idempotenz — PASS** (parallel 1 Effect + Replay, Payload-Konflikt;
-  Verlierer unterscheidet Replay/Konflikt).
+  Verlierer unterscheidet Replay/Konflikt; Konflikt schreibt genau ein
+  `idempotency_conflict`-Ereignis ohne Effect, Phase 3/F6).
 - [x] **I6 Outcome unknown — PASS** (`lost_ack` → Replay deterministisch;
   `kill_mid_tx` echter Backend-Tod in offener Tx → genau 1 Retry;
   Kill-Test beidseitig; Reconcile liest Zustand neu ein).
-  Hinweis Rev. 7: Die Recovery-Pfade erzeugten bis Phase 2 eine Historie mit
-  Kanten, die §3 nicht führte (F3). Rev. 7 legalisiert diese Kanten; die
-  DB-erzwungene Konsistenz von Snapshot und Historie folgt in Phase 2 (F10).
+  Hinweis Rev. 7/8: Die Recovery-Pfade erzeugten bis Phase 2 eine Historie mit
+  Kanten, die §3 nicht führte (F3). Rev. 7 legalisiert diese Kanten; Phase 2
+  erzwingt Snapshot/Historie-Konsistenz (F10).
 - [x] **I7 Self-Bypass — PASS (eng definiert)** (Deny → Repeat mit `repeat_of`,
   geänderte Permission → Allow). Keine allgemeine semantische Garantie.
 - [x] **I8 Keine manuelle Freigabe — PASS** (kein Approval-Parameter, keine
   Tabelle, kein Override-String; Quarantäne-Pfad getestet).
 - [x] **Audit/Evidence — PASS** (Writer-Idempotenz/Konkurrenz, Tamper/Löschung/
   Abschneiden erkannt, Checkpoint-Rolle getrennt, Verifier schreibt nie).
+  Rev. 8: Sequenz und Vorgängerzeiger sind serverseitig (F5), der Verifier prüft
+  Kontinuität ab 1, der Checkpoint ist append-only, abstammungsgeprüft und
+  Pflicht (F8).
 - [x] **Rollen — PASS** (volle Tabellen-Matrix + Sequenz-Minimalmatrix per 004,
   echte Verbindungen, PUBLIC-frei, Owner-Trennung).
 - [x] **Scope — PASS** (`demo_read` + `demo_update_record` beide ausführbar,

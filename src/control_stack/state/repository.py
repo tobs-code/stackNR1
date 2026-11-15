@@ -96,8 +96,6 @@ class Repository:
                            record_id: str, new_status: str,
                            expected_version: int, idempotency_key: str,
                            payload_hash: str, event_id: str,
-                           run_sequence: int,
-                           prev_event_hash: str,
                            guard_arguments: dict | None = None,
                            guard_actor_id: str | None = None,
                            _test_hook: str | None = None) -> dict | IdempotencyReplay:
@@ -109,22 +107,30 @@ class Repository:
         Direkte DML-Umgehung per Runtime-Credentials scheitert an den Grants.
         Replay-Fall: IdempotencyReplay ohne Effect. _test_hook='kill_mid_tx'
         (TEST-ONLY) beendet das eigene Backend in offener Tx.
+
+        F5: Sequenz und Vorgängerzeiger vergibt die DB; es gibt keine Parameter
+        dafür. F6: Der Konfliktfall liefert einen Marker; die Transaktion
+        committet dann nur das `idempotency_conflict`-Ereignis, und erst danach
+        wird die Exception geworfen.
         """
         hook = _test_hook if _test_hook == "kill_mid_tx" else None
         with self._conn() as c, c.cursor(row_factory=psycopg.rows.dict_row) as cur:
             try:
                 cur.execute(
-                    "SELECT fn_execute_write(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "SELECT fn_execute_write(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (action_id, run_id, record_id, new_status,
                      expected_version, idempotency_key, payload_hash,
-                     event_id, run_sequence, prev_event_hash,
-                     guard_actor_id or "", hook))
+                     event_id, guard_actor_id or "", hook))
             except _pgerrors.RaiseException as e:
                 raise _map_function_error(e, record_id, expected_version) from e
             payload = cur.fetchone()["fn_execute_write"]
-            if isinstance(payload, dict) and "replay" in payload:
-                return IdempotencyReplay(result=payload["replay"])
-            return payload
+        # Transaktion ist hier beendet (Commit). Erst jetzt ablehnen.
+        if isinstance(payload, dict) and "conflict" in payload:
+            raise IdempotencyConflictError(
+                f"{payload['conflict']}: key {idempotency_key} anderer Payload")
+        if isinstance(payload, dict) and "replay" in payload:
+            return IdempotencyReplay(result=payload["replay"])
+        return payload
 
     # -- Read-Pfad (Rev. 5 + Phase 1): effect-frei, aber autorisierungs- --
     # -- gebunden über fn_execute_read (Owner-Kontext). Lifecycle endet    --

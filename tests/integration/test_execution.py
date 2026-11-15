@@ -162,9 +162,9 @@ def test_outbox_failure_rolls_back_everything(live):
         # Kollision provozieren: Outbox-Insert im Write muss scheitern
         c.execute(
             "INSERT INTO outbox_events (event_id, run_id, action_id, sequence,"
-            " event_type, resource_version, payload_hash, previous_event_hash)"
-            " VALUES (%s,%s,%s,1,'state_committed',1,%s,%s)",
-            (crashed_event, rid, str(rec.action_id), "0" * 64, "0" * 64))
+            " event_type, resource_version, payload_hash, prev_event_id)"
+            " VALUES (%s,%s,%s,1,'state_committed',1,%s,NULL)",
+            (crashed_event, rid, str(rec.action_id), "0" * 64))
     with pytest.raises(Exception):
         execute(DSN, str(rec.action_id), dict(ARGS), ACTOR,
                 event_id=crashed_event)

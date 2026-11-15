@@ -22,6 +22,8 @@ GATE = ("dbname=control_stack_test user=stack_gate password=testpw_gate"
         " host=127.0.0.1 port=5433 connect_timeout=5")
 WORKER = ("dbname=control_stack_test user=stack_worker password=testpw_worker"
           " host=127.0.0.1 port=5433 connect_timeout=5")
+RECOVERY = ("dbname=control_stack_test user=stack_recovery password=testpw_recovery"
+            " host=127.0.0.1 port=5433 connect_timeout=5")
 OPA = os.environ.get("CONTROL_STACK_OPA_URL", "http://127.0.0.1:8181")
 ACTOR = "agent-1"
 ARGS = {"record_id": "rec-1", "status": "approved"}
@@ -150,7 +152,8 @@ FULL_MATRIX = {
     "outbox_events": (set(), S, S),
     "recovery_jobs": (set(), set(), SIUU),
     "evidence_ledger": (S, S, S),  # gate+worker+recovery: SELECT; Writes nur via Funktion
-    "evidence_checkpoints": (set(), S, SIUU),
+    # Phase 3 (F8): append-only, Writes nur über fn_write_checkpoint.
+    "evidence_checkpoints": (set(), S, S),
 }
 
 
@@ -195,7 +198,9 @@ def test_grant_matrix_exact(live):
 
 def test_verifier_never_writes(live):
     """E: fehlgeschlagene Verifikation hinterlässt Ledger unverändert."""
-    from control_stack.evidence import VerificationError, process_all, verify_run
+    from control_stack.evidence import (
+        VerificationError, process_all, verify_run, write_checkpoint,
+    )
     opa, rid = live
     with _admin() as c:
         c.execute("INSERT INTO records (record_id) VALUES ('rec-2')")
@@ -204,9 +209,11 @@ def test_verifier_never_writes(live):
          "arguments": {"record_id": "rec-2", "status": "rejected"},
          "expected_resource_version": 0}
     rec2 = authorize(GATE, opa, p, ACTOR, ["records.write"])
-    execute(WORKER, str(rec2.action_id), dict(p["arguments"]), ACTOR,
-            run_sequence=1, prev_event_hash="0" * 64)
+    execute(WORKER, str(rec2.action_id), dict(p["arguments"]), ACTOR)
     process_all(WORKER)
+    with _admin() as c, c.cursor() as cur:
+        cur.execute("SELECT event_hash FROM evidence_ledger ORDER BY sequence DESC LIMIT 1")
+        write_checkpoint(RECOVERY, rid, cur.fetchone()[0])
     with _admin() as c, c.cursor() as cur:
         cur.execute("SELECT event_id, event_hash FROM evidence_ledger ORDER BY sequence")
         before = [tuple(r) for r in cur.fetchall()]

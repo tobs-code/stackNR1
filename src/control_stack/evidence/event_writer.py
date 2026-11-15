@@ -4,6 +4,9 @@
 - pro-Run-Advisory-Lock verhindert Chain-Forks bei konkurrierenden Writern.
 - Ledger-Write nur über fn_ledger_append (Owner-Kontext): direkter
   Ledger-Zugriff per Runtime-Credentials ist entzogen (F7).
+- F5: Der Vorgänger wird aus dem Ledger-Head abgeleitet und gegen den
+  serverseitig gesetzten `prev_event_id` der Outbox geprüft. Lücke, fremder
+  Zeiger oder fehlender Vorgänger ⇒ TamperError; nichts wird "repariert".
 - Doppelverarbeitung: vorhandener Hash wird verglichen; divergierender
   Hash bei gleicher event_id ⇒ TamperError (kein stilles Überschreiben).
 - Fehler ⇒ Rollback, Event bleibt ausstehend (Ledger-Zeile fehlt).
@@ -34,9 +37,19 @@ def process_next(dsn: str) -> str | None:
             return None
         cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (row["run_id"],))
         cur.execute(
-            "SELECT event_hash FROM evidence_ledger WHERE run_id=%s"
-            " ORDER BY sequence DESC LIMIT 1", (row["run_id"],))
+            "SELECT event_id, sequence, event_hash FROM evidence_ledger"
+            " WHERE run_id=%s ORDER BY sequence DESC LIMIT 1", (row["run_id"],))
         head = cur.fetchone()
+        expected_seq = (head["sequence"] + 1) if head else 1
+        if row["sequence"] != expected_seq:
+            raise TamperError(
+                f"Sequenzlücke bei {row['event_id']}: erwartet {expected_seq},"
+                f" gefunden {row['sequence']}")
+        expected_prev_id = head["event_id"] if head else None
+        if row["prev_event_id"] != expected_prev_id:
+            raise TamperError(
+                f"Vorgängerzeiger von {row['event_id']} zeigt auf"
+                f" {row['prev_event_id']!r}, erwartet {expected_prev_id!r}")
         prev = head["event_hash"] if head else GENESIS
         h = event_hash(event_id=row["event_id"], event_type=row["event_type"],
                        action_id=row["action_id"], run_id=row["run_id"],
