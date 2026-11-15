@@ -8,8 +8,8 @@ is **no effect**.
 
 > **Status:** work in progress, reference prototype, not a production system.
 > Spec v0.1 is frozen at Rev. 6 (SHA-256 `7A11EF3D…CA6207D5`, see
-> `BUILD_MANIFEST.md`). Phase 1 is implemented on `fix/phase-1-boundary` and not
-> yet merged. A green test run is **not** a security proof.
+> `BUILD_MANIFEST.md`). Phase 1 (F1, F2, F4, F7) is implemented; later phases
+> are still open. A green test run is **not** a security proof.
 
 ## How it works
 
@@ -115,7 +115,7 @@ matches the audit recommendation.
 
 | Phase | Content | Status |
 |-------|---------|--------|
-| 1 | F1 target binding, F2 atomic run status, F4 fake commit, F7 DB as boundary | implemented on `fix/phase-1-boundary`, not merged |
+| 1 | F1 target binding, F2 atomic run status, F4 fake commit, F7 DB as boundary | implemented |
 | 2 | F3, F10: lifecycle transitions, pair CHECKs | open |
 | 3 | F5, F6, F8: evidence sequence, `idempotency_conflict` event, checkpoint anchor | open |
 | 4 | F9: read contract + negative matrix | open |
