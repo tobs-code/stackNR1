@@ -48,6 +48,7 @@ def inspect_action(cur: psycopg.Cursor, action_id: str) -> Inspection:
     """Klassifiziert anhand persistierter Daten (Record + Action + Resource).
 
     - committed + result  → replayed (kein neuer Effect)
+    - confirmed + result  → replayed (Read-Pfad ist terminal, §3b)
     - sonst ausführbar (auth Record vorhanden, gültig, nicht abgelaufen,
       Ressource auf erwarteter Version) → retry_allowed (genau ein Versuch
       über den idempotenten Pfad)
@@ -68,6 +69,13 @@ def inspect_action(cur: psycopg.Cursor, action_id: str) -> Inspection:
     if action["status"] == "committed":
         return Inspection("quarantined", None,
                           "committed ohne Ergebnis: widersprüchlich")
+    # Read-Pfad endet terminal bei confirmed (§3b). Ein Reconcile darf daraus
+    # kein outcome_unknown machen; das gespeicherte Leseergebnis ist gültig.
+    if action["status"] == "confirmed" and action["result"] is not None:
+        return Inspection("replayed", dict(action["result"]), "Read terminal bestätigt")
+    if action["status"] in ("failed", "quarantined", "rejected", "denied"):
+        return Inspection("quarantined", None,
+                          f"terminaler Zustand: {action['status']}")
     cur.execute("SELECT * FROM authorization_records WHERE action_id=%s",
                 (action_id,))
     rec = cur.fetchone()

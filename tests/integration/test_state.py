@@ -19,7 +19,6 @@ from control_stack.policy.client import OPAClient
 from control_stack.state.repository import (
     IdempotencyConflictError,
     IdempotencyReplay,
-    IllegalTransitionError,
     Repository,
     StaleVersionError,
 )
@@ -155,15 +154,20 @@ def test_missing_record_no_effect(repo):
         assert cur.fetchone()[0] == 0
 
 
-def test_illegal_lifecycle_rejected(repo):
+def test_create_action_starts_without_history(repo):
+    """F3: Eine frische Proposed-Action hat keine Transition.
+
+    Der frühere `proposed→proposed`-Eintrag war ein illegales Paar und ist
+    entfernt; die Historie beginnt mit dem ersten echten Statuswechsel.
+    """
     r, rid = repo
     aid = str(uuid.uuid4())
     r.create_action(action_id=aid, run_id=rid,
                     action="demo_read", target="rec-1", args_hash="c" * 64,
                     idempotency_key=f"{rid}:x1", payload_hash="c" * 64,
                     expected_resource_version=0)
-    with pytest.raises(IllegalTransitionError):
-        # proposed -> executing ist verboten
-        r.transition_action(aid, "proposed", "executing")
-    # DB-Zustand unverändert: kein Effect, Status weiter proposed
     assert r.load_action(aid)["status"] == "proposed"
+    with _db() as c, c.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM action_transitions WHERE action_id=%s",
+                    (aid,))
+        assert cur.fetchone()[0] == 0

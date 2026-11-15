@@ -107,7 +107,7 @@ def authorize(dsn: str, opa: OPAClient, raw_proposal: dict,
                 "INSERT INTO actions (action_id, run_id, action, target, args_hash,"
                 " idempotency_key, idempotency_payload_hash, status,"
                 " expected_resource_version) VALUES (%s,%s,%s,%s,%s,%s,%s,"
-                " 'authorized',%s)",
+                " 'proposed',%s)",
                 (str(proposal.action_id), proposal.run_id, proposal.action,
                  proposal.target, ah, key, ah, proposal.expected_resource_version))
             cur.execute(
@@ -124,10 +124,12 @@ def authorize(dsn: str, opa: OPAClient, raw_proposal: dict,
                 "INSERT INTO policy_decisions (action_id, decision, policy_version,"
                 " context_hash) VALUES (%s,'allow',%s,%s)",
                 (str(proposal.action_id), decision.policy_version, context_hash))
-            cur.execute(
-                "INSERT INTO action_transitions (action_id, old_status, new_status)"
-                " VALUES (%s,'proposed','validated'),(%s,'validated','authorized')",
-                (str(proposal.action_id), str(proposal.action_id)))
+            # F3: Statuswechsel ausschliesslich über die Rollen-Funktion
+            # (Gate darf nur proposed→validated→authorized/denied/rejected).
+            cur.execute("SELECT fn_gate_transition(%s,'validated')",
+                        (str(proposal.action_id),))
+            cur.execute("SELECT fn_gate_transition(%s,'authorized')",
+                        (str(proposal.action_id),))
         except Exception as e:
             c.rollback()
             raise GateRejected(f"record-persistenz fehlgeschlagen: {e}") from e
@@ -149,10 +151,17 @@ def _persist_denied(cur: Any, proposal: Any, actor_id: str,
     cur.execute(
         "INSERT INTO actions (action_id, run_id, action, target, args_hash,"
         " idempotency_key, idempotency_payload_hash, status,"
-        " expected_resource_version) VALUES (%s,%s,%s,%s,%s,%s,%s,'denied',%s)"
-        " ON CONFLICT (action_id) DO NOTHING",
+        " expected_resource_version) VALUES (%s,%s,%s,%s,%s,%s,%s,'proposed',%s)"
+        " ON CONFLICT (action_id) DO NOTHING RETURNING action_id",
         (str(proposal.action_id), proposal.run_id, proposal.action,
          proposal.target, ah, key, ah, proposal.expected_resource_version))
+    # Nur beim ersten Insert Transitionen schreiben; ein wiederholter Deny
+    # darf keine zweite Historie erzeugen.
+    if cur.fetchone() is not None:
+        cur.execute("SELECT fn_gate_transition(%s,'validated')",
+                    (str(proposal.action_id),))
+        cur.execute("SELECT fn_gate_transition(%s,'denied')",
+                    (str(proposal.action_id),))
     cur.execute(
         "INSERT INTO policy_decisions (action_id, decision, policy_version,"
         " context_hash) VALUES (%s,'deny',%s,%s) ON CONFLICT DO NOTHING",

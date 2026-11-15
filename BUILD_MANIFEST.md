@@ -1,8 +1,8 @@
 # Build Manifest v0.1
 
-Verbindliche Grundlage: `docs/spec-v0.1.md` Rev. 6 (eingefroren).
+Verbindliche Grundlage: `docs/spec-v0.1.md` Rev. 7 (eingefroren).
 
-- SHA-256 (spec-v0.1.md): `7A11EF3DC8A6276D8C6776B66DD3AC34A8DEA2DF2DEA00E2970CA100CA6207D5`
+- SHA-256 (spec-v0.1.md): `F2BDE27F22B5B03E215A5D2EC739BC87DEF83CAD617E7B10B5B00793E2C2B8B3`
 - Status: FROZEN — keine stillen Änderungen während der Implementierung.
   Jede Änderung braucht neue Rev. + neuen Hash + Eintrag hier.
 - Scope: DB-interner Demo-Write zuerst (atomare Transaktion),
@@ -19,3 +19,4 @@ Verbindliche Grundlage: `docs/spec-v0.1.md` Rev. 6 (eingefroren).
 | 2026-10-09 | Rev. 4: C1 kanonisches Feldset = Record-Felder (args_hash/context_hash), Record-Immutability via REVOKE; C2 action_transitions vs state_transitions getrennt | 34930FC3…A20ACD |
 | 2026-10-09 | Rev. 5: D1 demo_read-Pfad, D2 Worker-Prozess+IPC, D3 Deny-Fingerprint, D4 TEST-ONLY I6-Hooks | 9E0E0CB7…1EE04 |
 | 2026-10-09 | Rev. 6: §8 evidenzgebunden abgenommen, I6 kill_mid_tx echt, Recovery-Bindungsprüfung, Seq-Minimalrechte (004) | 7A11EF3D…6207D5 |
+| 2026-11-15 | Rev. 7 (F3/F10): §3 ergänzt `authorized→outcome_unknown`, `authorized→quarantined`, `executing→quarantined`, `committed→quarantined`; `failed` als ungenutzt markiert; Pair-CHECK + Snapshot/History-Konsistenz als DB-Invariante | F2BDE27F…C2B8B3 |

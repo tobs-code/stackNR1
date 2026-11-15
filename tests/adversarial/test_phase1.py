@@ -94,13 +94,21 @@ def test_f1_diverged_record_denied_at_execution(live):
     forged_args = {"record_id": "rec-2", "status": "approved"}
     ah = args_hash(forged_args)
     # PRIVILEGIERTE Fixture: direkt als Owner geschrieben, kein Runtime-Pfad.
+    # Beide Lifecycle-Guards sind bewusst deaktiviert (simuliert kompromittierten
+    # Owner); die Runtime-Prüfungen darunter bleiben aktiv.
     with _admin() as c:
-        c.execute(
-            "INSERT INTO actions (action_id, run_id, action, target, args_hash,"
-            " idempotency_key, idempotency_payload_hash, status,"
-            " expected_resource_version) VALUES (%s,%s,'demo_update_record',"
-            " 'rec-1',%s,%s,%s,'authorized',0)",
-            (aid, rid, ah, f"{rid}:{aid}", ah))
+        c.execute("ALTER TABLE actions DISABLE TRIGGER actions_insert_guard")
+        c.execute("ALTER TABLE actions DISABLE TRIGGER actions_lifecycle_consistent")
+        try:
+            c.execute(
+                "INSERT INTO actions (action_id, run_id, action, target, args_hash,"
+                " idempotency_key, idempotency_payload_hash, status,"
+                " expected_resource_version) VALUES (%s,%s,'demo_update_record',"
+                " 'rec-1',%s,%s,%s,'authorized',0)",
+                (aid, rid, ah, f"{rid}:{aid}", ah))
+        finally:
+            c.execute("ALTER TABLE actions ENABLE TRIGGER actions_insert_guard")
+            c.execute("ALTER TABLE actions ENABLE TRIGGER actions_lifecycle_consistent")
         c.execute(
             "INSERT INTO authorization_records (action_id, canonical_hash, action,"
             " target, args_hash, actor_id, permissions, expected_resource_version,"
@@ -220,6 +228,7 @@ def test_f4_forged_commit_quarantined_not_replayed(live):
     fake = str(uuid.uuid4())
     with _admin() as c:
         c.execute("ALTER TABLE actions DISABLE TRIGGER actions_insert_guard")
+        c.execute("ALTER TABLE actions DISABLE TRIGGER actions_lifecycle_consistent")
         try:
             c.execute(
                 "INSERT INTO actions (action_id, run_id, action, target, args_hash,"
@@ -230,6 +239,7 @@ def test_f4_forged_commit_quarantined_not_replayed(live):
                 (fake, rid, "0" * 64, f"{rid}:{fake}", "0" * 64))
         finally:
             c.execute("ALTER TABLE actions ENABLE TRIGGER actions_insert_guard")
+            c.execute("ALTER TABLE actions ENABLE TRIGGER actions_lifecycle_consistent")
     insp = reconcile(dsn("stack_recovery"), fake, rid)
     assert insp.outcome == "quarantined"
     with _admin() as c, c.cursor() as cur:
@@ -260,6 +270,7 @@ def test_f4_copied_result_without_own_transition_quarantined(live):
     with _admin() as c:
         c.execute("INSERT INTO records (record_id) VALUES ('rec-9')")
         c.execute("ALTER TABLE actions DISABLE TRIGGER actions_insert_guard")
+        c.execute("ALTER TABLE actions DISABLE TRIGGER actions_lifecycle_consistent")
         try:
             c.execute(
                 "INSERT INTO actions (action_id, run_id, action, target, args_hash,"
@@ -270,6 +281,7 @@ def test_f4_copied_result_without_own_transition_quarantined(live):
                  json.dumps(first)))
         finally:
             c.execute("ALTER TABLE actions ENABLE TRIGGER actions_insert_guard")
+            c.execute("ALTER TABLE actions ENABLE TRIGGER actions_lifecycle_consistent")
     insp = reconcile(dsn("stack_recovery"), other, rid)
     assert insp.outcome == "quarantined"
     with _admin() as c, c.cursor() as cur:

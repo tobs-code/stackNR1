@@ -140,10 +140,12 @@ FULL_MATRIX = {
     # geschützte Writes nur über DEFINER-Funktionen, direkte Worker-DML entzogen)
     "runs": (S, S, S),
     "records": (S, S, S),
-    "actions": (SI, S, SU),
+    # Phase 2 (F3/F10): Statuswechsel nur über DEFINER-Funktionen.
+    # Gate legt Actions an (Insert-Guard: proposed), sonst kein DML.
+    "actions": (SI, S, S),
     "authorization_records": (SI, S, S),
     "policy_decisions": (SI, set(), S),
-    "action_transitions": (SI, S, SI),
+    "action_transitions": (S, S, S),
     "state_transitions": (set(), S, S),
     "outbox_events": (set(), S, S),
     "recovery_jobs": (set(), set(), SIUU),
@@ -171,13 +173,13 @@ def test_grant_matrix_exact(live):
         cur.execute(
             "SELECT sequence_name FROM information_schema.sequences"
             " WHERE sequence_schema='public'")
-        # 004 + 005: nur benötigte Sequenzen je Rolle (least privilege).
-        # Worker schreibt nur über DEFINER-Funktionen (Owner-Kontext) und
-        # braucht deshalb keine Sequenzrechte mehr.
+        # 004 + 005 + 010: Runtime-Rollen brauchen keine Sequenzrechte mehr.
+        # Alle BIGSERIAL-Schreibvorgänge laufen im Owner-Kontext der
+        # SECURITY-DEFINER-Funktionen.
         want_seq = {
-            "stack_gate": {"action_transitions_seq_seq"},
+            "stack_gate": set(),
             "stack_worker": set(),
-            "stack_recovery": {"action_transitions_seq_seq"},
+            "stack_recovery": set(),
         }
         for (seq,) in cur.fetchall():
             for role in ("stack_gate", "stack_worker", "stack_recovery"):

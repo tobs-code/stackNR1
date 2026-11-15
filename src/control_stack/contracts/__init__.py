@@ -15,11 +15,12 @@ from .canonical import (
     record_fields,
     sha256_hex,
 )
-from .transitions import ALLOWED, is_allowed, transition
+from .transitions import ALLOWED, PAIRS, is_allowed, transition
 
 __all__ = [
     "RECORD_FIELDS",
     "ALLOWED",
+    "PAIRS",
     "ActionProposal",
     "ActionResult",
     "AuthorizationRecord",

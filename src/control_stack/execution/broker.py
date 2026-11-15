@@ -17,6 +17,7 @@ from ..state.repository import (
     AuthorizationMismatchError,
     AuthorizationMissingError,
     IdempotencyReplay,
+    LifecycleRejectedError,
     Repository,
     RunInactiveError,
     StaleVersionError,
@@ -83,7 +84,7 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
                 guard_arguments=arguments, guard_actor_id=actor_id)
         except (AuthorizationMissingError, AuthorizationExpiredError,
                 AuthorizationMismatchError, RunInactiveError,
-                StaleVersionError) as e:
+                LifecycleRejectedError, StaleVersionError) as e:
             raise ExecutionDenied(str(e)) from e
         except psycopg.OperationalError as e:
             raise OutcomeUnknown(action_id, str(e)) from e
@@ -115,7 +116,8 @@ def execute(dsn: str, action_id: str, arguments: dict, actor_id: str,
             raise OutcomeUnknown(action_id, "injected lost_ack")
         return out
     except (AuthorizationMissingError, AuthorizationExpiredError,
-            AuthorizationMismatchError, RunInactiveError) as e:
+            AuthorizationMismatchError, RunInactiveError,
+            LifecycleRejectedError) as e:
         raise ExecutionDenied(str(e)) from e
     except psycopg.OperationalError as e:
         # Commit-Ausgang unbekannt (Effect evtl. doch geschrieben) ⇒

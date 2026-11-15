@@ -4,8 +4,10 @@ Fehlersemantik (keine stillen Retries, keine generischen Fehler):
 - StaleVersionError: CAS rowcount=0 (Konflikt oder Ziel fehlt; Ursache im Feld).
 - IdempotencyConflictError: gleicher Key, anderer Payload.
 - IdempotencyReplay: KEIN Fehler — dataclass mit gespeichertem Ergebnis.
-- IllegalTransitionError: contracts.transition schlägt fehl.
+- LifecycleRejectedError: DB-Funktion lehnt den Statuswechsel ab (F3/F10).
 Jede commit_*-Methode läuft in EINER Transaktion; Fehler ⇒ Rollback.
+Statuswechsel selbst laufen ausschliesslich über die DB-Funktionen aus
+`migrations/010_lifecycle.sql`; dieses Modul schreibt keine Transitionen.
 """
 from __future__ import annotations
 
@@ -13,8 +15,6 @@ from dataclasses import dataclass
 
 import psycopg
 from psycopg import errors as _pgerrors
-
-from ..contracts import transition
 
 
 class StaleVersionError(Exception):
@@ -41,7 +41,7 @@ class AuthorizationMismatchError(Exception):
     pass
 
 
-class IllegalTransitionError(ValueError):
+class LifecycleRejectedError(Exception):
     pass
 
 
@@ -76,7 +76,11 @@ class Repository:
     def create_action(self, *, action_id: str, run_id: str, action: str,
                       target: str, args_hash: str, idempotency_key: str,
                       payload_hash: str, expected_resource_version: int) -> None:
-        """Proposed-Anlage + Idempotency-Claim in einer Transaktion."""
+        """Proposed-Anlage + Idempotency-Claim in einer Transaktion.
+
+        Ein frischer Proposed-Zustand hat per Definition KEINE Transition
+        (die Historie beginnt beim ersten echten Statuswechsel).
+        """
         with self._conn() as c, c.cursor() as cur:
             cur.execute(
                 "INSERT INTO actions (action_id, run_id, action, target, args_hash,"
@@ -85,28 +89,6 @@ class Repository:
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,'proposed',%s)",
                 (action_id, run_id, action, target, args_hash,
                  idempotency_key, payload_hash, expected_resource_version),
-            )
-            cur.execute(
-                "INSERT INTO action_transitions (action_id, old_status, new_status)"
-                " VALUES (%s,'proposed','proposed')", (action_id,),
-            )
-
-    def transition_action(self, action_id: str, old: str, new: str) -> None:
-        try:
-            transition(old, new)
-        except ValueError as e:
-            raise IllegalTransitionError(str(e)) from e
-        with self._conn() as c, c.cursor() as cur:
-            cur.execute(
-                "UPDATE actions SET status=%s WHERE action_id=%s AND status=%s",
-                (new, action_id, old),
-            )
-            if cur.rowcount != 1:
-                raise IllegalTransitionError(
-                    f"action {action_id}: status ist nicht {old!r}")
-            cur.execute(
-                "INSERT INTO action_transitions (action_id, old_status, new_status)"
-                " VALUES (%s,%s,%s)", (action_id, old, new),
             )
 
     # -- Atomarer Demo-Write (Phase 1: DB-erzwungene Grenze, ADR-001) ----
@@ -175,6 +157,9 @@ def _map_function_error(e: _pgerrors.RaiseException, record_id: str,
         return RunInactiveError(msg)
     if msg.startswith("idempotency_conflict:"):
         return IdempotencyConflictError(msg)
+    if msg.startswith(("lifecycle_reject:", "lifecycle_conflict:",
+                       "lifecycle_missing:", "lifecycle_forbidden:")):
+        return LifecycleRejectedError(msg)
     if msg.startswith("stale_version|"):
         parts = msg.split("|")
         try:

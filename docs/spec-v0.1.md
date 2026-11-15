@@ -1,4 +1,4 @@
-# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 6
+# Safety Stack v0.1 Spezifikation (prüfbare Bauanleitung) — Rev. 7
 
 Abgeleitet aus `read.me`, überarbeitet nach Reviews.
 Rev. 5 schliesst Abnahme-Lücken: (D1) `demo_read`-Ausführungspfad
@@ -7,6 +7,15 @@ Rev. 5 schliesst Abnahme-Lücken: (D1) `demo_read`-Ausführungspfad
 (Gate importiert `execution` nie — per AST-Check getestet);
 (D3) I7 Deny-Fingerprint (`repeat_of` bei gleichem Fingerprint <15min);
 (D4) deterministische I6-Hooks als TEST-ONLY (`_test_hook`).
+Rev. 6: §8 evidenzgebunden abgenommen, echter `kill_mid_tx`, Recovery-Bindungsprüfung,
+Sequenz-Minimalrechte (004).
+Rev. 7 (F3/F10): §3 legalisiert die von Reconcile und F4 bereits benutzten
+Kanten `authorized→outcome_unknown`, `authorized→quarantined`,
+`executing→quarantined` und `committed→quarantined`, markiert `failed` als in
+v0.1 ungenutzt und benennt `committed→quarantined` ausdrücklich als
+Integritäts-Übersteuerung. Dieselbe Kantenmenge ist in §4 als Pair-CHECK
+verankert; ab Phase 2 erzwingt die Datenbank zusätzlich, dass
+`actions.status` dem letzten `action_transitions`-Eintrag entspricht.
 Status: EINGEFROREN (siehe BUILD_MANIFEST.md). Keine stillen Änderungen.
 
 ## 0. Scope v0.1
@@ -107,9 +116,13 @@ class ActionProposal(BaseModel):
 Action: `proposed → validated → authorized → executing →
 {confirmed | failed | outcome_unknown} → {committed | quarantined}`,
 terminal zusätzlich `rejected`, `denied`.
-Fachlicher Endstatus (`confirmed/failed/quarantined`) bleibt terminal;
-Audit-Verbuchung ist separates Merkmal/Ereignis (kein
-`failed → committed`-Missverständnis aus Rev. 1).
+`failed` ist in v0.1 **reserviert**: definiert, aber von keinem
+Produktionspfad erzeugt (jeder Fehler ist Deny vor dem Effect oder
+`outcome_unknown` nach dem Claim). `quarantined` ist terminal. `committed`
+ist fachlich terminal, kann aber als **Integritäts-Übersteuerung** nach
+`quarantined` wechseln (F4: die persistierte Effect-Spur widerspricht dem
+Commit-Snapshot). Audit-Verbuchung bleibt ein separates Merkmal/Ereignis
+(kein `failed → committed`-Missverständnis aus Rev. 1).
 
 | Von | Nach | Bedingung |
 |---|---|---|
@@ -119,12 +132,19 @@ Audit-Verbuchung ist separates Merkmal/Ereignis (kein
 | validated | denied | OPA deny/error/timeout/abstain |
 | validated | rejected | Precondition/Stale atomar verletzt |
 | authorized | executing | atomarer Idempotency-Claim erfolgreich |
+| authorized | outcome_unknown | Reconcile vor dem ersten Ausführungsversuch (kein Effect möglich) |
+| authorized | quarantined | nicht behebbare Vorbedingung/Bindung (Tamper, Stale, Expiry, Ziel fehlt) |
 | executing | confirmed | Effect verifiziert |
-| executing | failed | definitiver Fehlschlag |
+| executing | failed | definitiver Fehlschlag — **in v0.1 ungenutzt (reserviert)** |
 | executing | outcome_unknown | Timeout/keine Bestätigung |
+| executing | quarantined | Abbruch ohne bestätigten Ausgang; Reconcile ergebnislos |
 | outcome_unknown | executing | nur nach Reconcile + Idempotenz-Nachweis |
 | outcome_unknown | quarantined | Reconcile ergebnislos |
 | confirmed | committed | Transaktion (Effect+Version+Outbox) erfolgreich |
+| committed | quarantined | Integritäts-Übersteuerung: Effect-Nachweis fehlt/widerspricht (F4) |
+
+`confirmed → committed` gilt nur für den Schreibpfad; `demo_read` endet
+terminal bei `confirmed` (§3b). Alle übrigen Paare sind unzulässig.
 
 Run: `active → {completed | aborted | quarantined}`; Writes nur wenn `active`.
 
@@ -220,10 +240,16 @@ CREATE TABLE action_transitions (
   new_status TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
--- Erlaubte Paare als CHECK (Spiegel von §3):
+-- Erlaubte Paare als CHECK (Spiegel von §3, Rev. 7):
 -- proposed→{validated,rejected}, validated→{authorized,denied,rejected},
--- authorized→executing, executing→{confirmed,failed,outcome_unknown},
--- outcome_unknown→{executing,quarantined}, confirmed→committed.
+-- authorized→{executing,outcome_unknown,quarantined},
+-- executing→{confirmed,failed,outcome_unknown,quarantined},
+-- outcome_unknown→{executing,quarantined}, confirmed→committed,
+-- committed→quarantined (nur Integritäts-Übersteuerung).
+-- Zusätzlich (ab Phase 2): status = new_status der letzten Transition
+-- (bzw. 'proposed' ohne Transition), geprüft am Transaktionsende.
+-- Statuswechsel laufen über SECURITY-DEFINER-Funktionen; Runtime-Rollen
+-- haben kein direktes INSERT/UPDATE auf actions/action_transitions.
 
 -- B2: mehrere Transitionen pro action_id (Lebenszyklus §3).
 -- Fachlicher Ressourcen-Übergang nur für demo_update_record; für
@@ -345,7 +371,7 @@ PASS = kein unzulässiger Effect + Nachweis-Ereignis vorhanden.
 3. **Config-Schutz:** SHA-Pin fest im Deployment hinterlegt (nicht nur in
    veränderbarer `security.yaml`); signierte Config später.
 
-## 8. Abnahme-Checkliste (Rev. 6, evidenzgebunden)
+## 8. Abnahme-Checkliste (Rev. 7, evidenzgebunden)
 
 Jede PASS-Markierung verweist auf konkrete Tests; Status pro Invariante:
 PASS / PARTIAL / OPEN. Nicht implementierter Schutz gilt als OPEN, nie als PASS.
@@ -364,6 +390,9 @@ PASS / PARTIAL / OPEN. Nicht implementierter Schutz gilt als OPEN, nie als PASS.
 - [x] **I6 Outcome unknown — PASS** (`lost_ack` → Replay deterministisch;
   `kill_mid_tx` echter Backend-Tod in offener Tx → genau 1 Retry;
   Kill-Test beidseitig; Reconcile liest Zustand neu ein).
+  Hinweis Rev. 7: Die Recovery-Pfade erzeugten bis Phase 2 eine Historie mit
+  Kanten, die §3 nicht führte (F3). Rev. 7 legalisiert diese Kanten; die
+  DB-erzwungene Konsistenz von Snapshot und Historie folgt in Phase 2 (F10).
 - [x] **I7 Self-Bypass — PASS (eng definiert)** (Deny → Repeat mit `repeat_of`,
   geänderte Permission → Allow). Keine allgemeine semantische Garantie.
 - [x] **I8 Keine manuelle Freigabe — PASS** (kein Approval-Parameter, keine
